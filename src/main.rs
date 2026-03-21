@@ -5,6 +5,8 @@ use std::path::PathBuf;
 mod app;
 mod editor;
 mod file_io;
+mod markdown;
+mod preview;
 mod status_bar;
 
 #[derive(Parser)]

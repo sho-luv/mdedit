@@ -1,7 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::{Color, Style};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 use ratatui_textarea::{CursorMove, TextArea};
 use std::path::PathBuf;
+
+use crate::highlighter::{self, MarkdownHighlighter};
 
 /// Actions that the editor can signal to the application layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,11 +18,14 @@ pub enum EditorAction {
 }
 
 /// Wraps `ratatui_textarea::TextArea` with custom nano-style keybindings,
-/// modified tracking, and file path management.
+/// modified tracking, file path management, and markdown syntax highlighting (D-09).
 pub struct Editor<'a> {
     textarea: TextArea<'a>,
     modified: bool,
     filepath: Option<PathBuf>,
+    highlighter: MarkdownHighlighter,
+    /// Persistent scroll top for the custom highlighted rendering.
+    scroll_top: usize,
 }
 
 impl<'a> Editor<'a> {
@@ -41,6 +50,8 @@ impl<'a> Editor<'a> {
             textarea,
             modified: false,
             filepath,
+            highlighter: MarkdownHighlighter::new(),
+            scroll_top: 0,
         }
     }
 
@@ -189,5 +200,76 @@ impl<'a> Editor<'a> {
     /// Set the file path (used when saving an untitled buffer).
     pub fn set_filepath(&mut self, path: PathBuf) {
         self.filepath = Some(path);
+    }
+
+    /// Render the editor with syntax-highlighted markdown text (D-09, D-10).
+    ///
+    /// Since tui-textarea does not expose per-span styling hooks, we render the
+    /// editor content ourselves: highlighted lines via syntect, line numbers,
+    /// and cursor positioning — while still using tui-textarea for input handling.
+    pub fn render_highlighted(&mut self, frame: &mut Frame, area: Rect) {
+        let total_lines = self.textarea.lines().len();
+        let height = area.height as usize;
+
+        if height == 0 {
+            return;
+        }
+
+        // Update scroll offset to keep cursor visible.
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        self.update_scroll(cursor_row, height);
+        let scroll_top = self.scroll_top;
+
+        // Get visible line range
+        let visible_end = std::cmp::min(scroll_top + height, total_lines);
+
+        // Highlight text through the visible range.
+        let full_text = self.textarea.lines().join("\n");
+        let highlighted = self.highlighter.highlight_range(&full_text, scroll_top, visible_end);
+
+        // Build final lines with line numbers prepended
+        let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(height);
+        for (i, hl_line) in highlighted.into_iter().enumerate() {
+            let row = scroll_top + i;
+            let lnum = highlighter::line_number_span(row, total_lines);
+
+            let mut spans = vec![lnum];
+            spans.extend(hl_line.spans);
+
+            let mut line = Line::from(spans);
+            // Subtle underline on cursor line for visibility
+            if row == cursor_row {
+                line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
+            }
+            display_lines.push(line);
+        }
+
+        // Pad remaining area with empty lines (for short files)
+        while display_lines.len() < height {
+            display_lines.push(Line::from(""));
+        }
+
+        let paragraph = Paragraph::new(display_lines);
+        frame.render_widget(paragraph, area);
+
+        // Place the cursor at the correct position
+        let lnum_width = highlighter::line_number_width(total_lines);
+        let cursor_x = area.x + lnum_width as u16 + cursor_col as u16;
+        let cursor_y = area.y + (cursor_row - scroll_top) as u16;
+        if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+
+    /// Update scroll_top to keep the cursor within the visible viewport.
+    fn update_scroll(&mut self, cursor_row: usize, height: usize) {
+        if cursor_row < self.scroll_top {
+            // Cursor above viewport — scroll up
+            self.scroll_top = cursor_row;
+        } else if cursor_row >= self.scroll_top + height {
+            // Cursor below viewport — scroll down
+            self.scroll_top = cursor_row + 1 - height;
+        }
+        // Otherwise cursor is within viewport — don't change scroll
     }
 }

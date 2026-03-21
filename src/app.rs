@@ -286,7 +286,7 @@ impl<'a> App<'a> {
     }
 
     /// Render the editor, preview, and status bar based on current layout mode.
-    fn render(&self, frame: &mut Frame) {
+    fn render(&mut self, frame: &mut Frame) {
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Fill(1), Constraint::Length(1)])
@@ -306,8 +306,8 @@ impl<'a> App<'a> {
                     ])
                     .split(body_area);
 
-                // Editor left
-                frame.render_widget(self.editor.widget(), chunks[0]);
+                // Editor left — with syntax highlighting (D-09)
+                self.editor.render_highlighted(frame, chunks[0]);
 
                 // Divider (D-11: subtle dimmed vertical line)
                 let divider_lines: Vec<ratatui::text::Line> = (0..chunks[1].height)
@@ -324,7 +324,7 @@ impl<'a> App<'a> {
                 self.preview.render(frame, chunks[2], &self.preview_text);
             }
             LayoutMode::EditorOnly => {
-                frame.render_widget(self.editor.widget(), body_area);
+                self.editor.render_highlighted(frame, body_area);
             }
             LayoutMode::PreviewOnly => {
                 self.preview.render(frame, body_area, &self.preview_text);

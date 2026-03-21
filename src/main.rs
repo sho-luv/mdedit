@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod app;
 mod editor;
 mod file_io;
+mod highlighter;
 mod markdown;
 mod preview;
 mod status_bar;

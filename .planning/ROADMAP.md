@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans:** 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Project skeleton, editor widget with nano-style keybindings, app event loop
+- [x] 01-01-PLAN.md — Project skeleton, editor widget with nano-style keybindings, app event loop
 - [ ] 01-02-PLAN.md — File I/O (atomic save), status bar, and exit-with-unsaved-changes flow
 
 ### Phase 2: Live Preview

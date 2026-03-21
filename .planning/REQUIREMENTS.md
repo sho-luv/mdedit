@@ -9,25 +9,25 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Foundation
 
-- [ ] **FOUND-01**: User can open a .md file by passing it as a CLI argument (`mdedit file.md`)
-- [ ] **FOUND-02**: User can create a new empty buffer when no file argument is given (`mdedit`)
-- [ ] **FOUND-03**: App starts in under 100ms with no visible delay
-- [ ] **FOUND-04**: App compiles to a single binary with no runtime dependencies
-- [ ] **FOUND-05**: Terminal state is fully restored on exit or crash (panic hook)
-- [ ] **FOUND-06**: App handles terminal resize events and reflows layout
+- [x] **FOUND-01**: User can open a .md file by passing it as a CLI argument (`mdedit file.md`)
+- [x] **FOUND-02**: User can create a new empty buffer when no file argument is given (`mdedit`)
+- [x] **FOUND-03**: App starts in under 100ms with no visible delay
+- [x] **FOUND-04**: App compiles to a single binary with no runtime dependencies
+- [x] **FOUND-05**: Terminal state is fully restored on exit or crash (panic hook)
+- [x] **FOUND-06**: App handles terminal resize events and reflows layout
 
 ### Editing
 
-- [ ] **EDIT-01**: User can insert, delete, and edit text with standard keyboard input
-- [ ] **EDIT-02**: User can move cursor with arrow keys, Home/End, Ctrl+Left/Right (word jump)
-- [ ] **EDIT-03**: User can undo changes with Ctrl+Z and redo with Ctrl+Y
+- [x] **EDIT-01**: User can insert, delete, and edit text with standard keyboard input
+- [x] **EDIT-02**: User can move cursor with arrow keys, Home/End, Ctrl+Left/Right (word jump)
+- [x] **EDIT-03**: User can undo changes with Ctrl+Z and redo with Ctrl+Y
 - [ ] **EDIT-04**: User can save the file with Ctrl+S and see confirmation in status bar
 - [ ] **EDIT-05**: User is warned about unsaved changes when attempting to exit
-- [ ] **EDIT-06**: Editor displays line numbers in a left gutter
+- [x] **EDIT-06**: Editor displays line numbers in a left gutter
 - [ ] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
 - [ ] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
 - [ ] **EDIT-09**: User can indent/outdent lines with Tab/Shift+Tab
-- [ ] **EDIT-10**: Editor correctly handles Unicode characters including multi-byte and wide characters
+- [x] **EDIT-10**: Editor correctly handles Unicode characters including multi-byte and wide characters
 
 ### Preview
 
@@ -49,7 +49,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **CHRM-01**: Status bar shows filename, cursor position (line:col), and modified indicator
 - [ ] **CHRM-02**: Status bar shows available keybinding hints
-- [ ] **CHRM-03**: App works correctly over SSH connections without Nerd Fonts or special terminal features
+- [x] **CHRM-03**: App works correctly over SSH connections without Nerd Fonts or special terminal features
 
 ## v2 Requirements
 
@@ -103,22 +103,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
-| FOUND-02 | Phase 1 | Pending |
-| FOUND-03 | Phase 1 | Pending |
-| FOUND-04 | Phase 1 | Pending |
-| FOUND-05 | Phase 1 | Pending |
-| FOUND-06 | Phase 1 | Pending |
-| EDIT-01 | Phase 1 | Pending |
-| EDIT-02 | Phase 1 | Pending |
-| EDIT-03 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
+| FOUND-02 | Phase 1 | Complete |
+| FOUND-03 | Phase 1 | Complete |
+| FOUND-04 | Phase 1 | Complete |
+| FOUND-05 | Phase 1 | Complete |
+| FOUND-06 | Phase 1 | Complete |
+| EDIT-01 | Phase 1 | Complete |
+| EDIT-02 | Phase 1 | Complete |
+| EDIT-03 | Phase 1 | Complete |
 | EDIT-04 | Phase 1 | Pending |
 | EDIT-05 | Phase 1 | Pending |
-| EDIT-06 | Phase 1 | Pending |
+| EDIT-06 | Phase 1 | Complete |
 | EDIT-07 | Phase 3 | Pending |
 | EDIT-08 | Phase 3 | Pending |
 | EDIT-09 | Phase 3 | Pending |
-| EDIT-10 | Phase 1 | Pending |
+| EDIT-10 | Phase 1 | Complete |
 | PREV-01 | Phase 2 | Pending |
 | PREV-02 | Phase 2 | Pending |
 | PREV-03 | Phase 2 | Pending |
@@ -131,7 +131,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LAYT-04 | Phase 2 | Pending |
 | CHRM-01 | Phase 1 | Pending |
 | CHRM-02 | Phase 2 | Pending |
-| CHRM-03 | Phase 1 | Pending |
+| CHRM-03 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 29 total

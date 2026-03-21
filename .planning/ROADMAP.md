@@ -28,12 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. User can save with Ctrl+S, see confirmation in the status bar, and is warned about unsaved changes on exit
   4. Status bar shows filename, cursor position (line:col), and modified indicator
   5. App starts in under 100ms, compiles to a single binary, handles terminal resize, restores terminal state on exit/crash, and works over SSH
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 01-01: Terminal infrastructure and app skeleton
-- [ ] 01-02: Editor component and file I/O
-- [ ] 01-03: Status bar and exit handling
+- [ ] 01-01-PLAN.md — Project skeleton, editor widget with nano-style keybindings, app event loop
+- [ ] 01-02-PLAN.md — File I/O (atomic save), status bar, and exit-with-unsaved-changes flow
 
 ### Phase 2: Live Preview
 **Goal**: Users can see their markdown rendered live alongside the editor — the defining mdedit experience
@@ -72,6 +71,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Terminal Editor | 0/3 | Not started | - |
+| 1. Terminal Editor | 0/2 | Not started | - |
 | 2. Live Preview | 0/2 | Not started | - |
 | 3. Polish and Power Features | 0/1 | Not started | - |

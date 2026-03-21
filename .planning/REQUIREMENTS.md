@@ -21,8 +21,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **EDIT-01**: User can insert, delete, and edit text with standard keyboard input
 - [x] **EDIT-02**: User can move cursor with arrow keys, Home/End, Ctrl+Left/Right (word jump)
 - [x] **EDIT-03**: User can undo changes with Ctrl+Z and redo with Ctrl+Y
-- [ ] **EDIT-04**: User can save the file with Ctrl+S and see confirmation in status bar
-- [ ] **EDIT-05**: User is warned about unsaved changes when attempting to exit
+- [x] **EDIT-04**: User can save the file with Ctrl+S and see confirmation in status bar
+- [x] **EDIT-05**: User is warned about unsaved changes when attempting to exit
 - [x] **EDIT-06**: Editor displays line numbers in a left gutter
 - [ ] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
 - [ ] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
@@ -47,7 +47,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Chrome
 
-- [ ] **CHRM-01**: Status bar shows filename, cursor position (line:col), and modified indicator
+- [x] **CHRM-01**: Status bar shows filename, cursor position (line:col), and modified indicator
 - [ ] **CHRM-02**: Status bar shows available keybinding hints
 - [x] **CHRM-03**: App works correctly over SSH connections without Nerd Fonts or special terminal features
 
@@ -112,8 +112,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EDIT-01 | Phase 1 | Complete |
 | EDIT-02 | Phase 1 | Complete |
 | EDIT-03 | Phase 1 | Complete |
-| EDIT-04 | Phase 1 | Pending |
-| EDIT-05 | Phase 1 | Pending |
+| EDIT-04 | Phase 1 | Complete |
+| EDIT-05 | Phase 1 | Complete |
 | EDIT-06 | Phase 1 | Complete |
 | EDIT-07 | Phase 3 | Pending |
 | EDIT-08 | Phase 3 | Pending |
@@ -129,7 +129,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LAYT-02 | Phase 2 | Pending |
 | LAYT-03 | Phase 3 | Pending |
 | LAYT-04 | Phase 2 | Pending |
-| CHRM-01 | Phase 1 | Pending |
+| CHRM-01 | Phase 1 | Complete |
 | CHRM-02 | Phase 2 | Pending |
 | CHRM-03 | Phase 1 | Complete |
 

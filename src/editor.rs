@@ -102,6 +102,34 @@ impl<'a> Editor<'a> {
                 None
             }
 
+            // Arrow keys — cursor movement
+            (KeyModifiers::NONE, KeyCode::Up) => {
+                self.textarea.move_cursor(CursorMove::Up);
+                None
+            }
+            (KeyModifiers::NONE, KeyCode::Down) => {
+                self.textarea.move_cursor(CursorMove::Down);
+                None
+            }
+            (KeyModifiers::NONE, KeyCode::Left) => {
+                self.textarea.move_cursor(CursorMove::Back);
+                None
+            }
+            (KeyModifiers::NONE, KeyCode::Right) => {
+                self.textarea.move_cursor(CursorMove::Forward);
+                None
+            }
+
+            // Page Up / Page Down
+            (KeyModifiers::NONE, KeyCode::PageUp) => {
+                self.textarea.move_cursor(CursorMove::ParagraphBack);
+                None
+            }
+            (KeyModifiers::NONE, KeyCode::PageDown) => {
+                self.textarea.move_cursor(CursorMove::ParagraphForward);
+                None
+            }
+
             // Ctrl+C does nothing (D-07)
             (KeyModifiers::CONTROL, KeyCode::Char('c')) => None,
 

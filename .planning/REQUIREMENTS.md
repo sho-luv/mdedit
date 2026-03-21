@@ -31,24 +31,24 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Preview
 
-- [ ] **PREV-01**: Preview pane renders markdown as formatted terminal output (headings, bold, italic, strikethrough)
-- [ ] **PREV-02**: Preview renders code blocks with syntax highlighting for common languages (bash, python, rust, javascript, json, go, typescript)
-- [ ] **PREV-03**: Preview renders links, lists (ordered/unordered), blockquotes, tables, horizontal rules, and task lists
-- [ ] **PREV-04**: Preview updates live as the user types with no perceptible lag (<100ms)
-- [ ] **PREV-05**: Preview uses GitHub Flavored Markdown (GFM) as the rendering standard
+- [x] **PREV-01**: Preview pane renders markdown as formatted terminal output (headings, bold, italic, strikethrough)
+- [x] **PREV-02**: Preview renders code blocks with syntax highlighting for common languages (bash, python, rust, javascript, json, go, typescript)
+- [x] **PREV-03**: Preview renders links, lists (ordered/unordered), blockquotes, tables, horizontal rules, and task lists
+- [x] **PREV-04**: Preview updates live as the user types with no perceptible lag (<100ms)
+- [x] **PREV-05**: Preview uses GitHub Flavored Markdown (GFM) as the rendering standard
 - [ ] **PREV-06**: Editor pane has markdown-aware syntax highlighting (headings, bold, code, links colored distinctly)
 
 ### Layout
 
-- [ ] **LAYT-01**: Default layout is side-by-side (editor left, preview right)
-- [ ] **LAYT-02**: User can toggle between split, editor-only, and preview-only views with a hotkey
+- [x] **LAYT-01**: Default layout is side-by-side (editor left, preview right)
+- [x] **LAYT-02**: User can toggle between split, editor-only, and preview-only views with a hotkey
 - [ ] **LAYT-03**: Preview scroll position tracks the editor cursor position (scroll sync)
-- [ ] **LAYT-04**: All features are keyboard-accessible without requiring a mouse
+- [x] **LAYT-04**: All features are keyboard-accessible without requiring a mouse
 
 ### Chrome
 
 - [x] **CHRM-01**: Status bar shows filename, cursor position (line:col), and modified indicator
-- [ ] **CHRM-02**: Status bar shows available keybinding hints
+- [x] **CHRM-02**: Status bar shows available keybinding hints
 - [x] **CHRM-03**: App works correctly over SSH connections without Nerd Fonts or special terminal features
 
 ## v2 Requirements
@@ -119,18 +119,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EDIT-08 | Phase 3 | Pending |
 | EDIT-09 | Phase 3 | Pending |
 | EDIT-10 | Phase 1 | Complete |
-| PREV-01 | Phase 2 | Pending |
-| PREV-02 | Phase 2 | Pending |
-| PREV-03 | Phase 2 | Pending |
-| PREV-04 | Phase 2 | Pending |
-| PREV-05 | Phase 2 | Pending |
+| PREV-01 | Phase 2 | Complete |
+| PREV-02 | Phase 2 | Complete |
+| PREV-03 | Phase 2 | Complete |
+| PREV-04 | Phase 2 | Complete |
+| PREV-05 | Phase 2 | Complete |
 | PREV-06 | Phase 2 | Pending |
-| LAYT-01 | Phase 2 | Pending |
-| LAYT-02 | Phase 2 | Pending |
+| LAYT-01 | Phase 2 | Complete |
+| LAYT-02 | Phase 2 | Complete |
 | LAYT-03 | Phase 3 | Pending |
-| LAYT-04 | Phase 2 | Pending |
+| LAYT-04 | Phase 2 | Complete |
 | CHRM-01 | Phase 1 | Complete |
-| CHRM-02 | Phase 2 | Pending |
+| CHRM-02 | Phase 2 | Complete |
 | CHRM-03 | Phase 1 | Complete |
 
 **Coverage:**

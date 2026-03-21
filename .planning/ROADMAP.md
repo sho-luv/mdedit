@@ -44,10 +44,10 @@ Plans:
   3. Preview updates live as the user types with no perceptible lag
   4. User can toggle between split view, editor-only, and preview-only with a hotkey
   5. Editor pane has markdown-aware syntax highlighting and keybinding hints are visible in the status bar
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
-- [ ] 02-01-PLAN.md — Preview component, MarkdownRenderer trait, split layout, Ctrl+P toggle, debounced preview, keybinding hints
+- [x] 02-01-PLAN.md — Preview component, MarkdownRenderer trait, split layout, Ctrl+P toggle, debounced preview, keybinding hints
 - [ ] 02-02-PLAN.md — Editor-pane markdown syntax highlighting via syntect, visual verification
 
 ### Phase 3: Polish and Power Features
@@ -72,5 +72,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Terminal Editor | 2/2 | Complete | 2026-03-21 |
-| 2. Live Preview | 0/2 | Not started | - |
+| 2. Live Preview | 1/2 | In Progress|  |
 | 3. Polish and Power Features | 0/1 | Not started | - |

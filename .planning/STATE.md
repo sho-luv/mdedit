@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-03-21T15:24:26.700Z"
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-03-21T15:44:48.723Z"
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 4
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-21)
 
 **Core value:** Edit markdown and see the rendered result side-by-side in a single terminal app, with zero external dependencies.
-**Current focus:** Phase 01 — terminal-editor
+**Current focus:** Phase 02 — Live Preview
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
+Phase: 02 (Live Preview) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -48,6 +48,7 @@ Plan: Not started
 *Updated after each plan completion*
 | Phase 01 P01 | 2min | 2 tasks | 5 files |
 | Phase 01 P02 | 2min | 2 tasks | 4 files |
+| Phase 02 P01 | 3min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -61,6 +62,9 @@ Recent decisions affecting current work:
 - [Phase 01]: Used ratatui-textarea 0.8 (ratatui org fork) for ratatui 0.30 compatibility
 - [Phase 01]: Used input_without_shortcuts() exclusively to avoid Emacs keybinding conflicts
 - [Phase 01]: Error display in status bar: save failures shown as timed message rather than separate error mode
+- [Phase 02]: Owned Text conversion: tui-markdown returns borrowed Text, added text_to_owned() for caching as Text<'static>
+- [Phase 02]: Ctrl+P intercepted at App level before editor to avoid tui-textarea Emacs conflict
+- [Phase 02]: 80ms debounce timer for preview updates as sweet spot between responsiveness and performance
 
 ### Pending Todos
 
@@ -73,6 +77,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-21T11:33:33.126Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-03-21T15:44:48.721Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None

@@ -59,14 +59,23 @@ impl StatusBar {
         }
 
         // Normal status line: filename + modified indicator on the left,
-        // cursor position on the right
+        // keybinding hints + cursor position on the right (D-15, CHRM-02)
         let mod_indicator = if modified { " [+]" } else { "" };
         let (row, col) = cursor;
         let left = format!(" {}{}", filename, mod_indicator);
-        let right = format!("Ln {}, Col {} ", row + 1, col + 1);
+        let hints = "Ctrl+S Save | Ctrl+P Preview | Ctrl+Q Quit";
+        let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
+        let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
+
+        // Use hints if terminal is wide enough; fall back to just cursor position
+        let available = area.width as usize;
+        let right = if left.len() + right_with_hints.len() <= available {
+            right_with_hints
+        } else {
+            right_no_hints
+        };
 
         // Calculate spacer width to push right-side text to the right edge
-        let available = area.width as usize;
         let used = left.len() + right.len();
         let spacer_width = if available > used { available - used } else { 1 };
         let spacer = " ".repeat(spacer_width);

@@ -1,16 +1,44 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::editor::{Editor, EditorAction};
 use crate::file_io;
+use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
+use crate::preview::Preview;
 use crate::status_bar::StatusBar;
+
+/// Layout mode — controls how the main area is split (D-11, D-12, D-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutMode {
+    Split,
+    EditorOnly,
+    PreviewOnly,
+}
+
+impl LayoutMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Split => Self::EditorOnly,
+            Self::EditorOnly => Self::PreviewOnly,
+            Self::PreviewOnly => Self::Split,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Split => "Split View",
+            Self::EditorOnly => "Editor Only",
+            Self::PreviewOnly => "Preview Only",
+        }
+    }
+}
 
 /// Application mode — determines how key events are routed and what the
 /// status bar displays.
@@ -35,6 +63,18 @@ pub struct App<'a> {
     status_bar: StatusBar,
     /// Flag indicating we should quit after saving (from ConfirmQuit -> 'y' flow).
     quit_after_save: bool,
+    /// Current layout mode (split, editor-only, preview-only).
+    layout_mode: LayoutMode,
+    /// Preview component managing scroll state.
+    preview: Preview,
+    /// Markdown renderer (abstracted behind trait for replaceability).
+    renderer: TuiMarkdownRenderer,
+    /// Cached rendered preview text.
+    preview_text: ratatui::text::Text<'static>,
+    /// Flag: content changed since last preview render.
+    content_dirty: bool,
+    /// Timestamp of last edit (for debounce).
+    last_edit_time: Option<Instant>,
 }
 
 impl<'a> App<'a> {
@@ -46,15 +86,39 @@ impl<'a> App<'a> {
             filename_input: String::new(),
             status_bar: StatusBar::new(),
             quit_after_save: false,
+            layout_mode: LayoutMode::Split, // D-11: default to split
+            preview: Preview::new(),
+            renderer: TuiMarkdownRenderer,
+            preview_text: ratatui::text::Text::default(),
+            content_dirty: true,            // Render initial content on first frame
+            last_edit_time: Some(Instant::now()),
+        }
+    }
+
+    /// Debounced preview update (D-04). Only re-renders after 80ms idle.
+    fn maybe_update_preview(&mut self) {
+        if self.content_dirty {
+            if let Some(last_edit) = self.last_edit_time {
+                if last_edit.elapsed() >= Duration::from_millis(80) {
+                    let content = self.editor.content();
+                    self.preview_text = self.renderer.render(&content);
+                    self.content_dirty = false;
+                    self.last_edit_time = None;
+                }
+            }
         }
     }
 
     /// Main event loop. Draws the UI and processes events until quit.
     pub fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         loop {
+            // Update preview before drawing (debounced)
+            self.maybe_update_preview();
+
             terminal.draw(|frame| self.render(frame))?;
 
             // Poll with 50ms timeout so timed status messages can expire
+            // and debounced preview can trigger
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     // IMPORTANT: filter for Press only to avoid double-handling
@@ -101,6 +165,28 @@ impl<'a> App<'a> {
 
     /// Handle key events in normal editing mode.
     fn handle_editing_key(&mut self, key: crossterm::event::KeyEvent) {
+        // Ctrl+P toggles layout mode (D-12) — intercept before editor to avoid conflict (Pitfall 2)
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+            self.layout_mode = self.layout_mode.next();
+            self.status_bar.set_message(self.layout_mode.label()); // D-16
+            return;
+        }
+
+        // In preview-only mode, route keys differently (D-13, D-14)
+        if self.layout_mode == LayoutMode::PreviewOnly {
+            match key.code {
+                KeyCode::Up => { self.preview.scroll_up(1); return; }
+                KeyCode::Down => { self.preview.scroll_down(1); return; }
+                KeyCode::PageUp => { self.preview.scroll_up(20); return; }
+                KeyCode::PageDown => { self.preview.scroll_down(20); return; }
+                _ => {
+                    // Any editing key switches back to split mode (D-14)
+                    self.layout_mode = LayoutMode::Split;
+                    // Fall through to normal editor key handling
+                }
+            }
+        }
+
         if let Some(action) = self.editor.handle_key(key) {
             match action {
                 EditorAction::Save => {
@@ -121,7 +207,8 @@ impl<'a> App<'a> {
                     }
                 }
                 EditorAction::ContentChanged => {
-                    // No-op — status bar reads modified flag directly
+                    self.content_dirty = true;
+                    self.last_edit_time = Some(Instant::now());
                 }
             }
         }
@@ -198,25 +285,58 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Render the editor and status bar.
+    /// Render the editor, preview, and status bar based on current layout mode.
     fn render(&self, frame: &mut Frame) {
-        let chunks = Layout::default()
+        let outer = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Fill(1),   // Editor area
-                Constraint::Length(1), // Status bar
-            ])
+            .constraints([Constraint::Fill(1), Constraint::Length(1)])
             .split(frame.area());
 
-        // Render editor widget
-        frame.render_widget(self.editor.widget(), chunks[0]);
+        let body_area = outer[0];
+        let status_area = outer[1];
+
+        match self.layout_mode {
+            LayoutMode::Split => {
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(50),
+                        Constraint::Length(1),
+                        Constraint::Percentage(50),
+                    ])
+                    .split(body_area);
+
+                // Editor left
+                frame.render_widget(self.editor.widget(), chunks[0]);
+
+                // Divider (D-11: subtle dimmed vertical line)
+                let divider_lines: Vec<ratatui::text::Line> = (0..chunks[1].height)
+                    .map(|_| {
+                        ratatui::text::Line::from(Span::styled(
+                            "\u{2502}",
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                    })
+                    .collect();
+                frame.render_widget(Paragraph::new(divider_lines), chunks[1]);
+
+                // Preview right
+                self.preview.render(frame, chunks[2], &self.preview_text);
+            }
+            LayoutMode::EditorOnly => {
+                frame.render_widget(self.editor.widget(), body_area);
+            }
+            LayoutMode::PreviewOnly => {
+                self.preview.render(frame, body_area, &self.preview_text);
+            }
+        }
 
         // Render status bar based on current mode
         match self.mode {
             AppMode::Editing => {
                 self.status_bar.render(
                     frame,
-                    chunks[1],
+                    status_area,
                     self.editor.display_name(),
                     self.editor.cursor_position(),
                     self.editor.is_modified(),
@@ -227,13 +347,13 @@ impl<'a> App<'a> {
                     " Unsaved changes. Save? (y/n/Esc)",
                 ))
                 .style(Style::default().bg(Color::Red).fg(Color::White));
-                frame.render_widget(bar, chunks[1]);
+                frame.render_widget(bar, status_area);
             }
             AppMode::PromptFilename => {
                 let prompt = format!(" Save as: {}_", self.filename_input);
                 let bar = Paragraph::new(Span::raw(prompt))
                     .style(Style::default().bg(Color::Blue).fg(Color::White));
-                frame.render_widget(bar, chunks[1]);
+                frame.render_widget(bar, status_area);
             }
         }
     }

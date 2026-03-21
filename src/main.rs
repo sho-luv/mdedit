@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 mod app;
 mod editor;
+mod file_io;
+mod status_bar;
 
 #[derive(Parser)]
 #[command(name = "mdedit", about = "A terminal markdown editor")]

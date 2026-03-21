@@ -72,6 +72,10 @@ Deferred to future release. Tracked but not in current roadmap.
 - **PREV-07**: Selectable markdown flavors (Obsidian, Lark, etc.) beyond GFM
 - **PREV-08**: Image alt-text placeholder rendering (`[image: description]`)
 
+### Editing Experience
+
+- **PREV-09**: WYSIWYG editing in preview mode (edit rendered output directly, changes map back to source markdown)
+
 ### Platform
 
 - **PLAT-01**: Clipboard integration (copy/paste via OSC 52 or platform-native)
@@ -99,41 +103,41 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | — | Pending |
-| FOUND-02 | — | Pending |
-| FOUND-03 | — | Pending |
-| FOUND-04 | — | Pending |
-| FOUND-05 | — | Pending |
-| FOUND-06 | — | Pending |
-| EDIT-01 | — | Pending |
-| EDIT-02 | — | Pending |
-| EDIT-03 | — | Pending |
-| EDIT-04 | — | Pending |
-| EDIT-05 | — | Pending |
-| EDIT-06 | — | Pending |
-| EDIT-07 | — | Pending |
-| EDIT-08 | — | Pending |
-| EDIT-09 | — | Pending |
-| EDIT-10 | — | Pending |
-| PREV-01 | — | Pending |
-| PREV-02 | — | Pending |
-| PREV-03 | — | Pending |
-| PREV-04 | — | Pending |
-| PREV-05 | — | Pending |
-| PREV-06 | — | Pending |
-| LAYT-01 | — | Pending |
-| LAYT-02 | — | Pending |
-| LAYT-03 | — | Pending |
-| LAYT-04 | — | Pending |
-| CHRM-01 | — | Pending |
-| CHRM-02 | — | Pending |
-| CHRM-03 | — | Pending |
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 1 | Pending |
+| FOUND-05 | Phase 1 | Pending |
+| FOUND-06 | Phase 1 | Pending |
+| EDIT-01 | Phase 1 | Pending |
+| EDIT-02 | Phase 1 | Pending |
+| EDIT-03 | Phase 1 | Pending |
+| EDIT-04 | Phase 1 | Pending |
+| EDIT-05 | Phase 1 | Pending |
+| EDIT-06 | Phase 1 | Pending |
+| EDIT-07 | Phase 3 | Pending |
+| EDIT-08 | Phase 3 | Pending |
+| EDIT-09 | Phase 3 | Pending |
+| EDIT-10 | Phase 1 | Pending |
+| PREV-01 | Phase 2 | Pending |
+| PREV-02 | Phase 2 | Pending |
+| PREV-03 | Phase 2 | Pending |
+| PREV-04 | Phase 2 | Pending |
+| PREV-05 | Phase 2 | Pending |
+| PREV-06 | Phase 2 | Pending |
+| LAYT-01 | Phase 2 | Pending |
+| LAYT-02 | Phase 2 | Pending |
+| LAYT-03 | Phase 3 | Pending |
+| LAYT-04 | Phase 2 | Pending |
+| CHRM-01 | Phase 1 | Pending |
+| CHRM-02 | Phase 2 | Pending |
+| CHRM-03 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 29 total
-- Mapped to phases: 0
-- Unmapped: 29 ⚠️
+- Mapped to phases: 29
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-21*
-*Last updated: 2026-03-21 after initial definition*
+*Last updated: 2026-03-21 after roadmap creation*

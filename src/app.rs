@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::editor::{Editor, EditorAction};
+use crate::file_io;
+use crate::status_bar::StatusBar;
 
 /// Application mode — determines how key events are routed and what the
 /// status bar displays.
@@ -29,6 +31,10 @@ pub struct App<'a> {
     should_quit: bool,
     /// Text buffer for the filename prompt.
     filename_input: String,
+    /// Status bar widget with timed messages.
+    status_bar: StatusBar,
+    /// Flag indicating we should quit after saving (from ConfirmQuit -> 'y' flow).
+    quit_after_save: bool,
 }
 
 impl<'a> App<'a> {
@@ -38,6 +44,8 @@ impl<'a> App<'a> {
             mode: AppMode::Editing,
             should_quit: false,
             filename_input: String::new(),
+            status_bar: StatusBar::new(),
+            quit_after_save: false,
         }
     }
 
@@ -69,13 +77,41 @@ impl<'a> App<'a> {
         Ok(())
     }
 
+    /// Perform the save operation. Returns true if save succeeded.
+    fn do_save(&mut self) -> bool {
+        if let Some(path) = self.editor.filepath().cloned() {
+            let content = self.editor.content();
+            match file_io::save_file(&path, &content) {
+                Ok(()) => {
+                    self.editor.mark_saved();
+                    self.status_bar.set_message("Saved");
+                    true
+                }
+                Err(e) => {
+                    self.status_bar
+                        .set_message(&format!("Save failed: {}", e));
+                    false
+                }
+            }
+        } else {
+            // No filepath — need to prompt for filename
+            false
+        }
+    }
+
     /// Handle key events in normal editing mode.
     fn handle_editing_key(&mut self, key: crossterm::event::KeyEvent) {
         if let Some(action) = self.editor.handle_key(key) {
             match action {
                 EditorAction::Save => {
-                    // TODO: Wire save logic in Plan 02 (file_io module)
-                    // For now, just a no-op placeholder
+                    if self.editor.filepath().is_some() {
+                        self.do_save();
+                    } else {
+                        // No filepath — prompt for filename
+                        self.filename_input = String::new();
+                        self.quit_after_save = false;
+                        self.mode = AppMode::PromptFilename;
+                    }
                 }
                 EditorAction::RequestQuit => {
                     if self.editor.is_modified() {
@@ -95,8 +131,20 @@ impl<'a> App<'a> {
     fn handle_confirm_quit_key(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                // TODO: Save before quitting (wire in Plan 02)
-                self.should_quit = true;
+                if self.editor.filepath().is_some() {
+                    // Save and quit
+                    if self.do_save() {
+                        self.should_quit = true;
+                    } else {
+                        // Save failed — return to editing
+                        self.mode = AppMode::Editing;
+                    }
+                } else {
+                    // No filepath — prompt for filename, then quit after save
+                    self.filename_input = String::new();
+                    self.quit_after_save = true;
+                    self.mode = AppMode::PromptFilename;
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 // Quit without saving
@@ -119,13 +167,25 @@ impl<'a> App<'a> {
                 if !self.filename_input.is_empty() {
                     let path = PathBuf::from(&self.filename_input);
                     self.editor.set_filepath(path);
-                    // TODO: Actually save the file (wire in Plan 02)
                     self.filename_input.clear();
-                    self.mode = AppMode::Editing;
+
+                    // Now save with the new filepath
+                    if self.do_save() {
+                        if self.quit_after_save {
+                            self.should_quit = true;
+                        } else {
+                            self.mode = AppMode::Editing;
+                        }
+                    } else {
+                        // Save failed — return to editing
+                        self.mode = AppMode::Editing;
+                    }
+                    self.quit_after_save = false;
                 }
             }
             KeyCode::Esc => {
                 self.filename_input.clear();
+                self.quit_after_save = false;
                 self.mode = AppMode::Editing;
             }
             KeyCode::Backspace => {
@@ -152,35 +212,29 @@ impl<'a> App<'a> {
         frame.render_widget(self.editor.widget(), chunks[0]);
 
         // Render status bar based on current mode
-        let status_bar = match self.mode {
-            AppMode::Editing => self.build_editing_status(),
-            AppMode::ConfirmQuit => Paragraph::new(Span::raw(
-                " Unsaved changes. Save? (y/n/Esc)",
-            ))
-            .style(Style::default().bg(Color::Red).fg(Color::White)),
+        match self.mode {
+            AppMode::Editing => {
+                self.status_bar.render(
+                    frame,
+                    chunks[1],
+                    self.editor.display_name(),
+                    self.editor.cursor_position(),
+                    self.editor.is_modified(),
+                );
+            }
+            AppMode::ConfirmQuit => {
+                let bar = Paragraph::new(Span::raw(
+                    " Unsaved changes. Save? (y/n/Esc)",
+                ))
+                .style(Style::default().bg(Color::Red).fg(Color::White));
+                frame.render_widget(bar, chunks[1]);
+            }
             AppMode::PromptFilename => {
                 let prompt = format!(" Save as: {}_", self.filename_input);
-                Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(Color::Blue).fg(Color::White))
+                let bar = Paragraph::new(Span::raw(prompt))
+                    .style(Style::default().bg(Color::Blue).fg(Color::White));
+                frame.render_widget(bar, chunks[1]);
             }
-        };
-
-        frame.render_widget(status_bar, chunks[1]);
-    }
-
-    /// Build the normal editing-mode status bar showing filename, modified
-    /// indicator, and cursor position (D-15).
-    fn build_editing_status(&self) -> Paragraph<'_> {
-        let (row, col) = self.editor.cursor_position();
-        let modified = if self.editor.is_modified() { " [+]" } else { "" };
-        let status = format!(
-            " {}{} | Ln {}, Col {}",
-            self.editor.display_name(),
-            modified,
-            row + 1,
-            col + 1,
-        );
-        Paragraph::new(Span::raw(status))
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        }
     }
 }

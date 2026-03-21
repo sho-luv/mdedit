@@ -48,7 +48,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md — Preview component, MarkdownRenderer trait, split layout, Ctrl+P toggle, debounced preview, keybinding hints
-- [ ] 02-02-PLAN.md — Editor-pane markdown syntax highlighting via syntect, visual verification
+- [x] 02-02-PLAN.md — Editor-pane markdown syntax highlighting via syntect, visual verification
 
 ### Phase 3: Polish and Power Features
 **Goal**: Users have scroll sync, search, and text selection — completing the editing experience for daily use

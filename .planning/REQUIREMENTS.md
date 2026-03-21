@@ -36,7 +36,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **PREV-03**: Preview renders links, lists (ordered/unordered), blockquotes, tables, horizontal rules, and task lists
 - [x] **PREV-04**: Preview updates live as the user types with no perceptible lag (<100ms)
 - [x] **PREV-05**: Preview uses GitHub Flavored Markdown (GFM) as the rendering standard
-- [ ] **PREV-06**: Editor pane has markdown-aware syntax highlighting (headings, bold, code, links colored distinctly)
+- [x] **PREV-06**: Editor pane has markdown-aware syntax highlighting (headings, bold, code, links colored distinctly)
 
 ### Layout
 
@@ -124,7 +124,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PREV-03 | Phase 2 | Complete |
 | PREV-04 | Phase 2 | Complete |
 | PREV-05 | Phase 2 | Complete |
-| PREV-06 | Phase 2 | Pending |
+| PREV-06 | Phase 2 | Complete |
 | LAYT-01 | Phase 2 | Complete |
 | LAYT-02 | Phase 2 | Complete |
 | LAYT-03 | Phase 3 | Pending |

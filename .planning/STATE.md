@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 02-02-PLAN.md
-last_updated: "2026-03-21T15:53:35.885Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-03-22T12:55:43.463Z"
 progress:
   total_phases: 3
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 6
+  completed_plans: 5
 ---
 
 # Project State
@@ -19,11 +19,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-21)
 
 **Core value:** Edit markdown and see the rendered result side-by-side in a single terminal app, with zero external dependencies.
-**Current focus:** Phase 02 — Live Preview
+**Current focus:** Phase 03 — Polish and Power Features
 
 ## Current Position
 
-Phase: 02 (Live Preview) — EXECUTING
+Phase: 03 (Polish and Power Features) — EXECUTING
 Plan: 2 of 2
 
 ## Performance Metrics
@@ -50,6 +50,7 @@ Plan: 2 of 2
 | Phase 01 P02 | 2min | 2 tasks | 4 files |
 | Phase 02 P01 | 3min | 2 tasks | 7 files |
 | Phase 02 P02 | 6min | 2 tasks | 6 files |
+| Phase 03 P01 | 2min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,9 @@ Recent decisions affecting current work:
 - [Phase 02]: 80ms debounce timer for preview updates as sweet spot between responsiveness and performance
 - [Phase 02]: Dropped syntect-tui due to ratatui 0.28 vs 0.30 type mismatch; manual style conversion instead
 - [Phase 02]: Custom editor render path: bypass tui-textarea Widget for per-span syntax highlighting while keeping it for input handling
+- [Phase 03]: Selection overlay uses Color::Rgb(68, 68, 102) blue/gray background
+- [Phase 03]: Scroll sync uses proportional ratio mapping with viewport centering
+- [Phase 03]: apply_highlight_overlay is public for reuse by search in Plan 02
 
 ### Pending Todos
 
@@ -80,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-21T15:53:35.883Z
-Stopped at: Completed 02-02-PLAN.md
+Last session: 2026-03-22T12:55:43.461Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None

@@ -62,7 +62,7 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Selection keybindings, indent/outdent, scroll sync, selection highlighting
+- [x] 03-01-PLAN.md — Selection keybindings, indent/outdent, scroll sync, selection highlighting
 - [ ] 03-02-PLAN.md — Text search with Ctrl+F, incremental match highlighting, navigation
 
 ## Progress

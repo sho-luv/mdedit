@@ -25,8 +25,8 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **EDIT-05**: User is warned about unsaved changes when attempting to exit
 - [x] **EDIT-06**: Editor displays line numbers in a left gutter
 - [ ] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
-- [ ] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
-- [ ] **EDIT-09**: User can indent/outdent lines with Tab/Shift+Tab
+- [x] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
+- [x] **EDIT-09**: User can indent/outdent lines with Tab/Shift+Tab
 - [x] **EDIT-10**: Editor correctly handles Unicode characters including multi-byte and wide characters
 
 ### Preview
@@ -42,7 +42,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [x] **LAYT-01**: Default layout is side-by-side (editor left, preview right)
 - [x] **LAYT-02**: User can toggle between split, editor-only, and preview-only views with a hotkey
-- [ ] **LAYT-03**: Preview scroll position tracks the editor cursor position (scroll sync)
+- [x] **LAYT-03**: Preview scroll position tracks the editor cursor position (scroll sync)
 - [x] **LAYT-04**: All features are keyboard-accessible without requiring a mouse
 
 ### Chrome
@@ -116,8 +116,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EDIT-05 | Phase 1 | Complete |
 | EDIT-06 | Phase 1 | Complete |
 | EDIT-07 | Phase 3 | Pending |
-| EDIT-08 | Phase 3 | Pending |
-| EDIT-09 | Phase 3 | Pending |
+| EDIT-08 | Phase 3 | Complete |
+| EDIT-09 | Phase 3 | Complete |
 | EDIT-10 | Phase 1 | Complete |
 | PREV-01 | Phase 2 | Complete |
 | PREV-02 | Phase 2 | Complete |
@@ -127,7 +127,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PREV-06 | Phase 2 | Complete |
 | LAYT-01 | Phase 2 | Complete |
 | LAYT-02 | Phase 2 | Complete |
-| LAYT-03 | Phase 3 | Pending |
+| LAYT-03 | Phase 3 | Complete |
 | LAYT-04 | Phase 2 | Complete |
 | CHRM-01 | Phase 1 | Complete |
 | CHRM-02 | Phase 2 | Complete |

@@ -404,7 +404,8 @@ impl<'a> Editor<'a> {
     /// Since tui-textarea does not expose per-span styling hooks, we render the
     /// editor content ourselves: highlighted lines via syntect, line numbers,
     /// and cursor positioning — while still using tui-textarea for input handling.
-    pub fn render_highlighted(&mut self, frame: &mut Frame, area: Rect) {
+    /// The `search_query` parameter enables search match highlighting (D-08).
+    pub fn render_highlighted(&mut self, frame: &mut Frame, area: Rect, search_query: &str) {
         let total_lines = self.textarea.lines().len();
         let height = area.height as usize;
 
@@ -424,6 +425,21 @@ impl<'a> Editor<'a> {
         let full_text = self.textarea.lines().join("\n");
         let highlighted = self.highlighter.highlight_range(&full_text, scroll_top, visible_end);
 
+        // Compile search regex if query is non-empty (D-08)
+        let search_re = if !search_query.is_empty() {
+            regex::Regex::new(&format!("(?i){}", regex::escape(search_query))).ok()
+        } else {
+            None
+        };
+
+        // Determine active match position for distinguishing current match (D-08)
+        let active_match_byte = if search_re.is_some() {
+            let line = &self.textarea.lines()[cursor_row];
+            line.char_indices().nth(cursor_col).map(|(i, _)| i).unwrap_or(line.len())
+        } else {
+            0
+        };
+
         // Selection highlight style (D-13)
         let selection_style = Style::default().bg(Color::Rgb(68, 68, 102));
 
@@ -433,17 +449,37 @@ impl<'a> Editor<'a> {
             let row = scroll_top + i;
             let lnum = highlighter::line_number_span(row, total_lines);
 
-            let mut spans: Vec<Span<'static>> = vec![lnum];
+            let mut content_spans = hl_line.spans;
 
-            // Apply selection overlay if this line has a selection
-            let line_spans = if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
-                apply_highlight_overlay(hl_line.spans, sel_start, sel_end, selection_style)
-            } else {
-                hl_line.spans
-            };
-            spans.extend(line_spans);
+            // Layer 1: Search match highlights (D-08)
+            if let Some(ref re) = search_re {
+                if row < self.textarea.lines().len() {
+                    let line_text = &self.textarea.lines()[row];
+                    let matches: Vec<(usize, usize)> = re.find_iter(line_text)
+                        .map(|m| (m.start(), m.end()))
+                        .collect();
+                    for (start, end) in matches {
+                        // Determine if this is the active match (bright cyan) or other match (yellow)
+                        let is_active = row == cursor_row && start == active_match_byte;
+                        let highlight_style = if is_active {
+                            Style::default().bg(Color::Cyan).fg(Color::Black) // Active match
+                        } else {
+                            Style::default().bg(Color::Yellow).fg(Color::Black) // Other matches
+                        };
+                        content_spans = apply_highlight_overlay(content_spans, start, end, highlight_style);
+                    }
+                }
+            }
 
-            let mut line = Line::from(spans);
+            // Layer 2: Selection highlight (applied after search so it takes priority)
+            if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
+                content_spans = apply_highlight_overlay(content_spans, sel_start, sel_end, selection_style);
+            }
+
+            let mut final_spans = vec![lnum];
+            final_spans.extend(content_spans);
+
+            let mut line = Line::from(final_spans);
             // Subtle underline on cursor line for visibility
             if row == cursor_row {
                 line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));

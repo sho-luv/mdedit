@@ -24,6 +24,11 @@ impl Preview {
         self.scroll_offset = 0;
     }
 
+    /// Set the scroll offset programmatically (used by scroll sync).
+    pub fn set_scroll(&mut self, offset: u16) {
+        self.scroll_offset = offset;
+    }
+
     /// Render the preview text into the given area.
     /// Clamps scroll offset to prevent blank screen (Pitfall 6).
     pub fn render(&self, frame: &mut Frame, area: Rect, text: &Text) {

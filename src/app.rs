@@ -95,6 +95,30 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Synchronize preview scroll to editor cursor position using proportional mapping (D-01).
+    /// Only active in Split mode (D-02). Called during render on every frame (D-03).
+    fn sync_preview_scroll(&mut self, preview_area_height: u16) {
+        if self.layout_mode != LayoutMode::Split {
+            return;
+        }
+        let (cursor_row, _) = self.editor.cursor_position();
+        let total_source = self.editor.line_count();
+        let total_preview = self.preview_text.lines.len() as u16;
+
+        if total_source <= 1 {
+            self.preview.set_scroll(0);
+            return;
+        }
+
+        // Proportional ratio mapping (D-01)
+        let ratio = cursor_row as f64 / (total_source - 1).max(1) as f64;
+        let target_line = (ratio * total_preview as f64) as u16;
+        // Center target in viewport for comfortable reading (D-04)
+        let centered = target_line.saturating_sub(preview_area_height / 2);
+        let max_scroll = total_preview.saturating_sub(preview_area_height);
+        self.preview.set_scroll(centered.min(max_scroll));
+    }
+
     /// Debounced preview update (D-04). Only re-renders after 80ms idle.
     fn maybe_update_preview(&mut self) {
         if self.content_dirty {
@@ -319,6 +343,9 @@ impl<'a> App<'a> {
                     })
                     .collect();
                 frame.render_widget(Paragraph::new(divider_lines), chunks[1]);
+
+                // Scroll sync: preview follows editor cursor (D-03)
+                self.sync_preview_scroll(chunks[2].height);
 
                 // Preview right
                 self.preview.render(frame, chunks[2], &self.preview_text);

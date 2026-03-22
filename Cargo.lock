@@ -862,6 +862,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "ratatui-textarea",
+ "regex",
  "syntect",
  "tui-markdown",
  "unicode-width",
@@ -1358,6 +1359,7 @@ dependencies = [
  "ratatui-core",
  "ratatui-crossterm",
  "ratatui-widgets",
+ "regex",
  "unicode-width",
 ]
 

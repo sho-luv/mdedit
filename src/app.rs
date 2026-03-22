@@ -5,6 +5,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use regex::Regex;
+use ratatui_textarea::CursorMove;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -50,6 +52,8 @@ pub enum AppMode {
     ConfirmQuit,
     /// Prompt: "Save as: ___" for untitled buffers (D-02)
     PromptFilename,
+    /// Incremental search mode (D-05). Captures keystrokes for search query.
+    Search,
 }
 
 /// Top-level application struct owning the editor and managing the event loop.
@@ -75,6 +79,14 @@ pub struct App<'a> {
     content_dirty: bool,
     /// Timestamp of last edit (for debounce).
     last_edit_time: Option<Instant>,
+    /// Current search query text (D-05).
+    search_query: String,
+    /// Cursor position when search started, for Esc restore (D-07).
+    search_cursor_before: (usize, usize),
+    /// Current match index (0-based) for [3/17] display (D-10).
+    search_match_index: usize,
+    /// Total match count for [3/17] display (D-10).
+    search_match_count: usize,
 }
 
 impl<'a> App<'a> {
@@ -92,6 +104,10 @@ impl<'a> App<'a> {
             preview_text: ratatui::text::Text::default(),
             content_dirty: true,            // Render initial content on first frame
             last_edit_time: Some(Instant::now()),
+            search_query: String::new(),
+            search_cursor_before: (0, 0),
+            search_match_index: 0,
+            search_match_count: 0,
         }
     }
 
@@ -152,6 +168,7 @@ impl<'a> App<'a> {
                             AppMode::Editing => self.handle_editing_key(key),
                             AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
                             AppMode::PromptFilename => self.handle_prompt_filename_key(key),
+                            AppMode::Search => self.handle_search_key(key),
                         }
                     }
                 }
@@ -189,6 +206,16 @@ impl<'a> App<'a> {
 
     /// Handle key events in normal editing mode.
     fn handle_editing_key(&mut self, key: crossterm::event::KeyEvent) {
+        // Ctrl+F enters search mode (D-05) — intercept before editor
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('f') {
+            self.search_query.clear();
+            self.search_cursor_before = self.editor.cursor_position();
+            self.search_match_index = 0;
+            self.search_match_count = 0;
+            self.mode = AppMode::Search;
+            return;
+        }
+
         // Ctrl+P toggles layout mode (D-12) — intercept before editor to avoid conflict (Pitfall 2)
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
             self.layout_mode = self.layout_mode.next();
@@ -309,6 +336,85 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Handle key events in search mode (D-05 through D-11).
+    fn handle_search_key(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                // Exit search, restore cursor to pre-search position (D-07)
+                let (row, col) = self.search_cursor_before;
+                self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, col as u16));
+                // Clear search pattern to prevent ghost highlights (Pitfall 4)
+                let _ = self.editor.textarea_mut().set_search_pattern("");
+                self.search_query.clear();
+                self.mode = AppMode::Editing;
+            }
+            KeyCode::Enter => {
+                if self.search_match_count > 0 {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        // Shift+Enter: previous match (D-07)
+                        self.editor.textarea_mut().search_back(false);
+                        self.search_match_index = if self.search_match_index == 0 {
+                            self.search_match_count - 1
+                        } else {
+                            self.search_match_index - 1
+                        };
+                    } else {
+                        // Enter: next match (D-07)
+                        self.editor.textarea_mut().search_forward(false);
+                        self.search_match_index = (self.search_match_index + 1) % self.search_match_count;
+                    }
+                    // Update cursor_before so Esc now stays at this match (D-07)
+                    self.search_cursor_before = self.editor.cursor_position();
+                }
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.update_search_pattern();
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.update_search_pattern();
+            }
+            _ => {}
+        }
+    }
+
+    /// Update the search pattern on the textarea and recount matches (D-06, D-09).
+    fn update_search_pattern(&mut self) {
+        if self.search_query.is_empty() {
+            let _ = self.editor.textarea_mut().set_search_pattern("");
+            self.search_match_count = 0;
+            self.search_match_index = 0;
+            return;
+        }
+        // Case-insensitive plain text search (D-09)
+        let pattern = format!("(?i){}", regex::escape(&self.search_query));
+        let _ = self.editor.textarea_mut().set_search_pattern(&pattern);
+
+        // Count matches across all lines (D-10)
+        if let Ok(re) = Regex::new(&pattern) {
+            let content = self.editor.content();
+            self.search_match_count = re.find_iter(&content).count();
+        } else {
+            self.search_match_count = 0;
+        }
+        self.search_match_index = 0;
+
+        // Jump to first match from current position (D-06)
+        if self.search_match_count > 0 {
+            self.editor.textarea_mut().search_forward(true);
+        }
+    }
+
+    /// Return the current search query if in search mode, empty string otherwise.
+    pub fn current_search_query(&self) -> &str {
+        if self.mode == AppMode::Search && !self.search_query.is_empty() {
+            &self.search_query
+        } else {
+            ""
+        }
+    }
+
     /// Render the editor, preview, and status bar based on current layout mode.
     fn render(&mut self, frame: &mut Frame) {
         let outer = Layout::default()
@@ -318,6 +424,8 @@ impl<'a> App<'a> {
 
         let body_area = outer[0];
         let status_area = outer[1];
+
+        let search_query = self.current_search_query().to_string();
 
         match self.layout_mode {
             LayoutMode::Split => {
@@ -331,7 +439,7 @@ impl<'a> App<'a> {
                     .split(body_area);
 
                 // Editor left — with syntax highlighting (D-09)
-                self.editor.render_highlighted(frame, chunks[0]);
+                self.editor.render_highlighted(frame, chunks[0], &search_query);
 
                 // Divider (D-11: subtle dimmed vertical line)
                 let divider_lines: Vec<ratatui::text::Line> = (0..chunks[1].height)
@@ -351,7 +459,7 @@ impl<'a> App<'a> {
                 self.preview.render(frame, chunks[2], &self.preview_text);
             }
             LayoutMode::EditorOnly => {
-                self.editor.render_highlighted(frame, body_area);
+                self.editor.render_highlighted(frame, body_area, &search_query);
             }
             LayoutMode::PreviewOnly => {
                 self.preview.render(frame, body_area, &self.preview_text);
@@ -378,6 +486,18 @@ impl<'a> App<'a> {
             }
             AppMode::PromptFilename => {
                 let prompt = format!(" Save as: {}_", self.filename_input);
+                let bar = Paragraph::new(Span::raw(prompt))
+                    .style(Style::default().bg(Color::Blue).fg(Color::White));
+                frame.render_widget(bar, status_area);
+            }
+            AppMode::Search => {
+                let prompt = if self.search_match_count > 0 {
+                    format!(" Search: {} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count)
+                } else if self.search_query.is_empty() {
+                    " Search: _".to_string()
+                } else {
+                    format!(" Search: {} [no matches]", self.search_query)
+                };
                 let bar = Paragraph::new(Span::raw(prompt))
                     .style(Style::default().bg(Color::Blue).fg(Color::White));
                 frame.render_widget(bar, status_area);

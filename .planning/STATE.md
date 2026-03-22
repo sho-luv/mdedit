@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Power User
 status: unknown
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-03-22T14:59:53.368Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-03-22T19:06:21.166Z"
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 6
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Edit markdown and see the rendered result side-by-side in a single terminal app, with zero external dependencies.
-**Current focus:** Phase 04 — configuration-and-themes
+**Current focus:** Phase 05 — vim-keybindings-and-mouse
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
+Phase: 05 (vim-keybindings-and-mouse) — EXECUTING
+Plan: 2 of 4
 
 ## Performance Metrics
 
@@ -60,6 +60,8 @@ v2.0 roadmap decisions:
 - [Phase 04]: Ocean theme matches original hardcoded colors for zero visual change
 - [Phase 04]: 256-color fallback uses euclidean distance to 6x6x6 cube
 - [Phase 04]: Theme passed as owned clone to Editor to avoid lifetime complexity
+- [Phase 05]: VimHandler returns VimCommand enum for app.rs to interpret, keeping editor logic in app layer
+- [Phase 05]: CursorMoveCmd wrapper enum to enable PartialEq/Eq derives on VimCommand
 
 ### Pending Todos
 
@@ -74,6 +76,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-22T14:56:52.544Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-03-22T19:06:21.164Z
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None

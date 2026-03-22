@@ -1,101 +1,96 @@
-# Requirements: mdedit
+# Requirements: mdedit v2.0
 
-**Defined:** 2026-03-21
+**Defined:** 2026-03-22
 **Core Value:** Edit markdown and see the rendered result side-by-side in a single terminal app, with zero external dependencies.
 
-## v1 Requirements
+## v2.0 Requirements
 
-Requirements for initial release. Each maps to roadmap phases.
+Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 
-### Foundation
+### Configuration
 
-- [x] **FOUND-01**: User can open a .md file by passing it as a CLI argument (`mdedit file.md`)
-- [x] **FOUND-02**: User can create a new empty buffer when no file argument is given (`mdedit`)
-- [x] **FOUND-03**: App starts in under 100ms with no visible delay
-- [x] **FOUND-04**: App compiles to a single binary with no runtime dependencies
-- [x] **FOUND-05**: Terminal state is fully restored on exit or crash (panic hook)
-- [x] **FOUND-06**: App handles terminal resize events and reflows layout
+- [ ] **CONF-01**: User can configure settings via `~/.config/mdedit/config.toml`
+- [ ] **CONF-02**: User can select color theme by name in config (`theme = "dracula"`)
+- [ ] **CONF-03**: User can define custom color themes in TOML
+- [ ] **CONF-04**: User can set default editing mode in config (`mode = "vim"` or `mode = "nano"`)
+- [ ] **CONF-05**: Editor respects terminal color capability (256-color and truecolor detection)
 
-### Editing
+### Vim Keybindings
 
-- [x] **EDIT-01**: User can insert, delete, and edit text with standard keyboard input
-- [x] **EDIT-02**: User can move cursor with arrow keys, Home/End, Ctrl+Left/Right (word jump)
-- [x] **EDIT-03**: User can undo changes with Ctrl+Z and redo with Ctrl+Y
-- [x] **EDIT-04**: User can save the file with Ctrl+S and see confirmation in status bar
-- [x] **EDIT-05**: User is warned about unsaved changes when attempting to exit
-- [x] **EDIT-06**: Editor displays line numbers in a left gutter
-- [x] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
-- [x] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
-- [x] **EDIT-09**: User can indent/outdent lines with Tab/Shift+Tab
-- [x] **EDIT-10**: Editor correctly handles Unicode characters including multi-byte and wide characters
+- [ ] **VIM-01**: Editor starts in Normal mode by default (vim-style)
+- [ ] **VIM-02**: User can switch between Normal, Insert, and Visual modes
+- [ ] **VIM-03**: Normal mode supports motions: h/j/k/l, w/b/e, 0/$, gg/G, {/}
+- [ ] **VIM-04**: Normal mode supports operators: d (delete), c (change), y (yank), p/P (paste)
+- [ ] **VIM-05**: Insert mode entered via i/a/o/O/A/I, exited via Esc
+- [ ] **VIM-06**: Visual mode supports character selection (v) and line selection (V)
+- [ ] **VIM-07**: Command mode supports :w (save), :q (quit), :wq, :q!
+- [ ] **VIM-08**: Status bar shows current mode (NORMAL/INSERT/VISUAL/COMMAND)
+- [ ] **VIM-09**: Normal mode supports count prefixes (e.g., 3j, 5dd, 2w)
+- [ ] **VIM-10**: Undo/redo via u and Ctrl+R in Normal mode
 
-### Preview
+### Clipboard
 
-- [x] **PREV-01**: Preview pane renders markdown as formatted terminal output (headings, bold, italic, strikethrough)
-- [x] **PREV-02**: Preview renders code blocks with syntax highlighting for common languages (bash, python, rust, javascript, json, go, typescript)
-- [x] **PREV-03**: Preview renders links, lists (ordered/unordered), blockquotes, tables, horizontal rules, and task lists
-- [x] **PREV-04**: Preview updates live as the user types with no perceptible lag (<100ms)
-- [x] **PREV-05**: Preview uses GitHub Flavored Markdown (GFM) as the rendering standard
-- [x] **PREV-06**: Editor pane has markdown-aware syntax highlighting (headings, bold, code, links colored distinctly)
+- [ ] **CLIP-01**: User can copy selected text to system clipboard via vim yank (y) or Ctrl+C
+- [ ] **CLIP-02**: User can paste from system clipboard via vim paste (p/P) or Ctrl+V
+- [ ] **CLIP-03**: Clipboard works over SSH via OSC 52 escape sequence
+- [ ] **CLIP-04**: Clipboard falls back to platform-native (pbcopy/xclip) when available locally
 
-### Layout
+### Mouse Support
 
-- [x] **LAYT-01**: Default layout is side-by-side (editor left, preview right)
-- [x] **LAYT-02**: User can toggle between split, editor-only, and preview-only views with a hotkey
-- [x] **LAYT-03**: Preview scroll position tracks the editor cursor position (scroll sync)
-- [x] **LAYT-04**: All features are keyboard-accessible without requiring a mouse
+- [ ] **MOUSE-01**: User can click to position cursor in editor pane
+- [ ] **MOUSE-02**: User can scroll editor and preview panes with mouse wheel
+- [ ] **MOUSE-03**: User can click-drag to select text in editor pane
+- [ ] **MOUSE-04**: User can resize split ratio by dragging the divider
 
-### Chrome
+### Browser Companion
 
-- [x] **CHRM-01**: Status bar shows filename, cursor position (line:col), and modified indicator
-- [x] **CHRM-02**: Status bar shows available keybinding hints
-- [x] **CHRM-03**: App works correctly over SSH connections without Nerd Fonts or special terminal features
+- [ ] **BROW-01**: User can launch browser preview with `mdedit --browser <file>`
+- [ ] **BROW-02**: Browser renders markdown with GitHub-accurate CSS styling
+- [ ] **BROW-03**: Browser preview auto-refreshes when file is saved
+- [ ] **BROW-04**: Browser companion runs as local HTTP server (localhost only)
+- [ ] **BROW-05**: Terminal editor and browser companion can run simultaneously
 
-## v2 Requirements
+### WYSIWYG Mode
 
-Deferred to future release. Tracked but not in current roadmap.
+- [ ] **WYS-01**: User can launch WYSIWYG mode with `mdedit --wysiwyg <file>`
+- [ ] **WYS-02**: Markdown renders inline in the terminal (headings styled, bold rendered, etc.)
+- [ ] **WYS-03**: Cursor line reveals raw markdown syntax for editing
+- [ ] **WYS-04**: User can edit in WYSIWYG mode with same keybindings (vim/nano)
+- [ ] **WYS-05**: WYSIWYG mode saves the underlying markdown source (not rendered form)
 
-### Layout Enhancements
+## Future Requirements
 
-- **LAYT-05**: User can switch between horizontal (side-by-side) and vertical (stacked) split
-- **LAYT-06**: User can adjust split ratio with keyboard shortcut
-- **LAYT-07**: Table of contents sidebar extracted from headings with jump-to navigation
+Deferred beyond v2.0.
 
-### Editing Enhancements
+### Advanced Vim
+- **VIM-F01**: Visual Block mode (Ctrl+V)
+- **VIM-F02**: Macros (q recording)
+- **VIM-F03**: Marks and jumps
+- **VIM-F04**: Custom keybinding remapping in config
 
-- **EDIT-11**: Quick-insert snippets for common markdown (table template, link, code block)
-- **EDIT-12**: File browser / fuzzy finder to open files without leaving the app
-- **EDIT-13**: Multiple file tabs
+### Advanced Editing
+- **EDIT-F01**: Search and replace (:%s/old/new/g)
+- **EDIT-F02**: Regex search mode
+- **EDIT-F03**: Multi-cursor editing
+- **EDIT-F04**: Auto-pair brackets and markdown syntax
 
-### Preview Enhancements
-
-- **PREV-07**: Selectable markdown flavors (Obsidian, Lark, etc.) beyond GFM
-- **PREV-08**: Image alt-text placeholder rendering (`[image: description]`)
-
-### Editing Experience
-
-- **PREV-09**: WYSIWYG editing in preview mode (edit rendered output directly, changes map back to source markdown)
-
-### Platform
-
-- **PLAT-01**: Clipboard integration (copy/paste via OSC 52 or platform-native)
-- **PLAT-02**: Mouse support for scrolling and clicking
-- **PLAT-03**: Optional config file for keybindings and theme customization
+### Browser
+- **BROW-F01**: Server-sent events for instant refresh (no polling)
+- **BROW-F02**: Scroll sync between terminal and browser
+- **BROW-F03**: Dark/light mode toggle in browser
 
 ## Out of Scope
 
-Explicitly excluded. Documented to prevent scope creep.
-
 | Feature | Reason |
 |---------|--------|
-| Vim/emacs keybindings | Massive scope increase; vim users have render-markdown.nvim |
-| Plugin/extension system | Premature abstraction for a compiled binary |
-| Cloud sync | Files live on the filesystem; users have git/Dropbox |
-| Export to HTML/PDF | Users can pipe through pandoc |
-| AI/LLM integration | Out of scope for a focused TUI tool |
-| Nerd Font requirement | Breaks SSH and stock terminals |
-| Frontmatter/YAML parsing | Irrelevant for general markdown editing |
-| Image rendering | Terminal image protocols too fragmented |
+| File browser/picker | Open files via CLI, not in-app navigator |
+| Multiple open files/tabs | One file at a time, keep it simple |
+| Image rendering in terminal | Terminal image protocols too fragmented |
+| Plugin system | Premature abstraction |
+| Async runtime (tokio) | Synchronous event loop sufficient, adds complexity |
+| Full vim compatibility | Support ~30 core keybindings, not all of vim |
+| LSP integration | Out of scope for a markdown editor |
+| Collaborative editing | Far beyond current scope |
 
 ## Traceability
 
@@ -103,41 +98,45 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Complete |
-| FOUND-02 | Phase 1 | Complete |
-| FOUND-03 | Phase 1 | Complete |
-| FOUND-04 | Phase 1 | Complete |
-| FOUND-05 | Phase 1 | Complete |
-| FOUND-06 | Phase 1 | Complete |
-| EDIT-01 | Phase 1 | Complete |
-| EDIT-02 | Phase 1 | Complete |
-| EDIT-03 | Phase 1 | Complete |
-| EDIT-04 | Phase 1 | Complete |
-| EDIT-05 | Phase 1 | Complete |
-| EDIT-06 | Phase 1 | Complete |
-| EDIT-07 | Phase 3 | Complete |
-| EDIT-08 | Phase 3 | Complete |
-| EDIT-09 | Phase 3 | Complete |
-| EDIT-10 | Phase 1 | Complete |
-| PREV-01 | Phase 2 | Complete |
-| PREV-02 | Phase 2 | Complete |
-| PREV-03 | Phase 2 | Complete |
-| PREV-04 | Phase 2 | Complete |
-| PREV-05 | Phase 2 | Complete |
-| PREV-06 | Phase 2 | Complete |
-| LAYT-01 | Phase 2 | Complete |
-| LAYT-02 | Phase 2 | Complete |
-| LAYT-03 | Phase 3 | Complete |
-| LAYT-04 | Phase 2 | Complete |
-| CHRM-01 | Phase 1 | Complete |
-| CHRM-02 | Phase 2 | Complete |
-| CHRM-03 | Phase 1 | Complete |
+| CONF-01 | — | Pending |
+| CONF-02 | — | Pending |
+| CONF-03 | — | Pending |
+| CONF-04 | — | Pending |
+| CONF-05 | — | Pending |
+| VIM-01 | — | Pending |
+| VIM-02 | — | Pending |
+| VIM-03 | — | Pending |
+| VIM-04 | — | Pending |
+| VIM-05 | — | Pending |
+| VIM-06 | — | Pending |
+| VIM-07 | — | Pending |
+| VIM-08 | — | Pending |
+| VIM-09 | — | Pending |
+| VIM-10 | — | Pending |
+| CLIP-01 | — | Pending |
+| CLIP-02 | — | Pending |
+| CLIP-03 | — | Pending |
+| CLIP-04 | — | Pending |
+| MOUSE-01 | — | Pending |
+| MOUSE-02 | — | Pending |
+| MOUSE-03 | — | Pending |
+| MOUSE-04 | — | Pending |
+| BROW-01 | — | Pending |
+| BROW-02 | — | Pending |
+| BROW-03 | — | Pending |
+| BROW-04 | — | Pending |
+| BROW-05 | — | Pending |
+| WYS-01 | — | Pending |
+| WYS-02 | — | Pending |
+| WYS-03 | — | Pending |
+| WYS-04 | — | Pending |
+| WYS-05 | — | Pending |
 
 **Coverage:**
-- v1 requirements: 29 total
-- Mapped to phases: 29
-- Unmapped: 0
+- v2.0 requirements: 33 total
+- Mapped to phases: 0
+- Unmapped: 33 ⚠️
 
 ---
-*Requirements defined: 2026-03-21*
-*Last updated: 2026-03-21 after roadmap creation*
+*Requirements defined: 2026-03-22*
+*Last updated: 2026-03-22 after initial definition*

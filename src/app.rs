@@ -490,23 +490,94 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Handle key events in Vim Normal mode.
-    fn handle_vim_key(&mut self, key: crossterm::event::KeyEvent) {
-        // Ctrl+P toggles layout mode -- intercept before vim handler
-        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
-            self.layout_mode = self.layout_mode.next();
-            self.status_bar.set_message(self.layout_mode.label());
-            return;
+    /// Mark content as changed (sets dirty flag and edit timestamp).
+    fn mark_content_changed(&mut self) {
+        self.content_dirty = true;
+        self.last_edit_time = Some(Instant::now());
+    }
+
+    /// Convert a Motion to a CursorMove for textarea operations.
+    fn motion_to_cursor_move(motion: &Motion) -> CursorMove {
+        match motion {
+            Motion::Left => CursorMove::Back,
+            Motion::Right => CursorMove::Forward,
+            Motion::Up => CursorMove::Up,
+            Motion::Down => CursorMove::Down,
+            Motion::WordForward | Motion::WordEnd => CursorMove::WordForward,
+            Motion::WordBack => CursorMove::WordBack,
+            Motion::LineStart => CursorMove::Head,
+            Motion::LineEnd => CursorMove::End,
+            Motion::FileStart => CursorMove::Top,
+            Motion::FileEnd => CursorMove::Bottom,
+            Motion::ParagraphUp => CursorMove::ParagraphBack,
+            Motion::ParagraphDown => CursorMove::ParagraphForward,
+            Motion::Line | Motion::ToEnd | Motion::ToStart => CursorMove::Head, // handled specially
         }
+    }
 
-        let handler = self.vim_handler.as_mut().unwrap();
-        let cmd = handler.handle_key(key);
-
+    /// Execute a VimCommand by translating it to textarea/editor operations.
+    fn execute_vim_command(&mut self, cmd: VimCommand) {
         match cmd {
+            VimCommand::Move(cursor_cmd) => {
+                self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+            }
+            VimCommand::MoveN(cursor_cmd, n) => {
+                for _ in 0..n {
+                    self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                }
+            }
+            VimCommand::Delete { motion } => {
+                self.execute_vim_operator_delete(motion);
+            }
+            VimCommand::Change { motion } => {
+                self.execute_vim_operator_change(motion);
+            }
+            VimCommand::Yank { motion } => {
+                self.execute_vim_operator_yank(motion);
+            }
+            VimCommand::DeleteChar => {
+                self.editor.textarea_mut().delete_next_char();
+                self.mark_content_changed();
+            }
+            VimCommand::PasteAfter => {
+                let text = self.vim_handler.as_ref()
+                    .map(|h| h.yank_register().to_string())
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    if text.ends_with('\n') {
+                        // Line-wise paste: paste on next line
+                        self.editor.textarea_mut().move_cursor(CursorMove::End);
+                        self.editor.textarea_mut().insert_newline();
+                        let trimmed = text.trim_end_matches('\n');
+                        self.editor.textarea_mut().insert_str(trimmed);
+                    } else {
+                        self.editor.textarea_mut().move_cursor(CursorMove::Forward);
+                        self.editor.textarea_mut().insert_str(&text);
+                    }
+                    self.mark_content_changed();
+                }
+            }
+            VimCommand::PasteBefore => {
+                let text = self.vim_handler.as_ref()
+                    .map(|h| h.yank_register().to_string())
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    if text.ends_with('\n') {
+                        // Line-wise paste: paste on previous line
+                        self.editor.textarea_mut().move_cursor(CursorMove::Head);
+                        self.editor.textarea_mut().insert_newline();
+                        self.editor.textarea_mut().move_cursor(CursorMove::Up);
+                        let trimmed = text.trim_end_matches('\n');
+                        self.editor.textarea_mut().insert_str(trimmed);
+                    } else {
+                        self.editor.textarea_mut().insert_str(&text);
+                    }
+                    self.mark_content_changed();
+                }
+            }
             VimCommand::EnterInsert(pos) => {
-                self.mode = AppMode::Insert;
-                // Position cursor based on insert variant
                 match pos {
+                    InsertPosition::BeforeCursor => {}
                     InsertPosition::AfterCursor => {
                         self.editor.textarea_mut().move_cursor(CursorMove::Forward);
                     }
@@ -519,85 +590,40 @@ impl<'a> App<'a> {
                     InsertPosition::NewLineBelow => {
                         self.editor.textarea_mut().move_cursor(CursorMove::End);
                         self.editor.textarea_mut().insert_newline();
-                        self.content_dirty = true;
-                        self.last_edit_time = Some(Instant::now());
+                        self.mark_content_changed();
                     }
                     InsertPosition::NewLineAbove => {
                         self.editor.textarea_mut().move_cursor(CursorMove::Head);
                         self.editor.textarea_mut().insert_newline();
                         self.editor.textarea_mut().move_cursor(CursorMove::Up);
-                        self.content_dirty = true;
-                        self.last_edit_time = Some(Instant::now());
+                        self.mark_content_changed();
                     }
-                    InsertPosition::BeforeCursor => {} // no movement needed
                 }
+                self.mode = AppMode::Insert;
             }
-            VimCommand::EnterCommand => {
-                self.mode = AppMode::Command;
-            }
-            VimCommand::EnterVisual { line_wise: _ } => {
-                self.mode = AppMode::Visual;
-                self.editor.textarea_mut().start_selection();
-            }
-            VimCommand::EnterSearch => {
-                self.search_query.clear();
-                self.search_cursor_before = self.editor.cursor_position();
-                self.search_match_index = 0;
-                self.search_match_count = 0;
-                self.mode = AppMode::Search;
-            }
-            VimCommand::None => {}
-            _ => {} // Other commands handled in Plans 02/03
-        }
-    }
-
-    /// Handle key events in Vim Insert mode.
-    fn handle_vim_insert_key(&mut self, key: crossterm::event::KeyEvent) {
-        let handler = self.vim_handler.as_mut().unwrap();
-        let cmd = handler.handle_key(key);
-
-        match cmd {
             VimCommand::ExitInsert => {
                 self.mode = AppMode::Normal;
             }
-            VimCommand::None => {
-                // Forward all non-Esc keys to textarea for text input
-                let changed = self.editor.textarea_mut().input_without_shortcuts(key);
-                if changed {
-                    self.content_dirty = true;
-                    self.last_edit_time = Some(Instant::now());
-                }
+            VimCommand::EnterVisual { line_wise: _ } => {
+                self.editor.textarea_mut().start_selection();
+                self.mode = AppMode::Visual;
             }
-            _ => {}
-        }
-    }
-
-    /// Handle key events in Vim Visual mode.
-    fn handle_vim_visual_key(&mut self, key: crossterm::event::KeyEvent) {
-        let handler = self.vim_handler.as_mut().unwrap();
-        let cmd = handler.handle_key(key);
-
-        match cmd {
             VimCommand::ExitVisual => {
                 self.editor.textarea_mut().cancel_selection();
                 self.mode = AppMode::Normal;
             }
-            VimCommand::None => {} // Visual motions handled in Plan 03
-            _ => {}
-        }
-    }
-
-    /// Handle key events in Vim Command mode.
-    fn handle_vim_command_key(&mut self, key: crossterm::event::KeyEvent) {
-        let handler = self.vim_handler.as_mut().unwrap();
-        let cmd = handler.handle_key(key);
-
-        match cmd {
+            VimCommand::EnterCommand => {
+                self.mode = AppMode::Command;
+            }
             VimCommand::ExitCommand => {
                 self.mode = AppMode::Normal;
             }
-            VimCommand::Save => {
+            VimCommand::CommandExecute(ref cmd_str) => {
+                let cmd_str = cmd_str.clone();
+                self.execute_ex_command(&cmd_str);
                 self.mode = AppMode::Normal;
+            }
+            VimCommand::Save => {
                 if self.editor.filepath().is_some() {
                     self.do_save();
                 } else {
@@ -607,7 +633,6 @@ impl<'a> App<'a> {
                 }
             }
             VimCommand::Quit { force } => {
-                self.mode = AppMode::Normal;
                 if force || !self.editor.is_modified() {
                     self.should_quit = true;
                 } else {
@@ -615,7 +640,6 @@ impl<'a> App<'a> {
                 }
             }
             VimCommand::SaveAndQuit => {
-                self.mode = AppMode::Normal;
                 if self.editor.filepath().is_some() {
                     if self.do_save() {
                         self.should_quit = true;
@@ -626,12 +650,258 @@ impl<'a> App<'a> {
                     self.mode = AppMode::PromptFilename;
                 }
             }
-            VimCommand::CommandAppend(_) | VimCommand::CommandBackspace => {
-                // Handler maintains buffer; nothing else to do
+            VimCommand::EnterSearch => {
+                self.search_query.clear();
+                self.search_cursor_before = self.editor.cursor_position();
+                self.search_match_index = 0;
+                self.search_match_count = 0;
+                self.mode = AppMode::Search;
             }
-            VimCommand::None => {}
+            VimCommand::Undo => {
+                self.editor.textarea_mut().undo();
+                self.mark_content_changed();
+            }
+            VimCommand::Redo => {
+                self.editor.textarea_mut().redo();
+                self.mark_content_changed();
+            }
+            VimCommand::ContentChanged => {
+                self.mark_content_changed();
+            }
+            VimCommand::None | VimCommand::CommandAppend(_) | VimCommand::CommandBackspace => {}
+            // Visual operators handled in Plan 03
             _ => {}
         }
+    }
+
+    /// Execute a delete operator with a motion.
+    fn execute_vim_operator_delete(&mut self, motion: Motion) {
+        match motion {
+            Motion::Line => {
+                // dd: delete current line
+                let text = self.editor.delete_current_line();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+            }
+            Motion::ToEnd => {
+                // D / d$: select to end of line, delete
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(CursorMove::End);
+                let text = self.editor.cut_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+            }
+            Motion::ToStart => {
+                // d0: select to start of line, delete
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(CursorMove::Head);
+                let text = self.editor.cut_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+            }
+            other => {
+                let cursor_move = Self::motion_to_cursor_move(&other);
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(cursor_move);
+                let text = self.editor.cut_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+            }
+        }
+    }
+
+    /// Execute a change operator with a motion (delete + enter insert mode).
+    fn execute_vim_operator_change(&mut self, motion: Motion) {
+        match motion {
+            Motion::Line => {
+                // cc: delete line content but keep the line, enter insert
+                let text = self.editor.delete_current_line_content();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+                self.mode = AppMode::Insert;
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_mode_insert();
+                }
+            }
+            Motion::ToEnd => {
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(CursorMove::End);
+                let text = self.editor.cut_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+                self.mode = AppMode::Insert;
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_mode_insert();
+                }
+            }
+            other => {
+                let cursor_move = Self::motion_to_cursor_move(&other);
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(cursor_move);
+                let text = self.editor.cut_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.mark_content_changed();
+                self.mode = AppMode::Insert;
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_mode_insert();
+                }
+            }
+        }
+    }
+
+    /// Execute a yank operator with a motion (copy without deleting).
+    fn execute_vim_operator_yank(&mut self, motion: Motion) {
+        match motion {
+            Motion::Line => {
+                // yy: yank current line
+                let text = self.editor.yank_current_line();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+            }
+            Motion::ToEnd => {
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(CursorMove::End);
+                let text = self.editor.get_selection_text();
+                self.editor.textarea_mut().cancel_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+            }
+            other => {
+                let cursor_move = Self::motion_to_cursor_move(&other);
+                self.editor.textarea_mut().start_selection();
+                self.editor.textarea_mut().move_cursor(cursor_move);
+                let text = self.editor.get_selection_text();
+                self.editor.textarea_mut().cancel_selection();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+            }
+        }
+    }
+
+    /// Execute an ex command (typed after ':').
+    fn execute_ex_command(&mut self, cmd: &str) {
+        match cmd.trim() {
+            "w" => {
+                if self.editor.filepath().is_some() {
+                    self.do_save();
+                } else {
+                    self.filename_input = String::new();
+                    self.quit_after_save = false;
+                    self.mode = AppMode::PromptFilename;
+                }
+            }
+            "q" => {
+                if self.editor.is_modified() {
+                    self.status_bar.set_message("No write since last change (add ! to override)");
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            "q!" => {
+                self.should_quit = true;
+            }
+            "wq" | "x" => {
+                if self.editor.filepath().is_some() {
+                    if self.do_save() {
+                        self.should_quit = true;
+                    }
+                } else {
+                    self.filename_input = String::new();
+                    self.quit_after_save = true;
+                    self.mode = AppMode::PromptFilename;
+                }
+            }
+            other => {
+                self.status_bar.set_message(&format!("Not a command: {}", other));
+            }
+        }
+    }
+
+    /// Handle key events in Vim Normal mode.
+    fn handle_vim_key(&mut self, key: crossterm::event::KeyEvent) {
+        // Ctrl+P toggles layout mode -- intercept before vim handler
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+            self.layout_mode = self.layout_mode.next();
+            self.status_bar.set_message(self.layout_mode.label());
+            return;
+        }
+
+        let cmd = self.vim_handler.as_mut()
+            .map(|h| h.handle_key(key))
+            .unwrap_or(VimCommand::None);
+        self.execute_vim_command(cmd);
+    }
+
+    /// Handle key events in Vim Insert mode.
+    fn handle_vim_insert_key(&mut self, key: crossterm::event::KeyEvent) {
+        let cmd = self.vim_handler.as_mut()
+            .map(|h| h.handle_key(key))
+            .unwrap_or(VimCommand::None);
+
+        match cmd {
+            VimCommand::ExitInsert => {
+                self.execute_vim_command(cmd);
+            }
+            VimCommand::None => {
+                // Forward all non-Esc keys to textarea for text input
+                let changed = self.editor.textarea_mut().input_without_shortcuts(key);
+                if changed {
+                    self.mark_content_changed();
+                }
+            }
+            _ => {
+                self.execute_vim_command(cmd);
+            }
+        }
+    }
+
+    /// Handle key events in Vim Visual mode.
+    fn handle_vim_visual_key(&mut self, key: crossterm::event::KeyEvent) {
+        let cmd = self.vim_handler.as_mut()
+            .map(|h| h.handle_key(key))
+            .unwrap_or(VimCommand::None);
+
+        match cmd {
+            VimCommand::ExitVisual => {
+                self.execute_vim_command(cmd);
+            }
+            // Allow motions in visual mode to extend selection
+            VimCommand::Move(cursor_cmd) => {
+                self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+            }
+            VimCommand::MoveN(cursor_cmd, n) => {
+                for _ in 0..n {
+                    self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                }
+            }
+            VimCommand::None => {} // Visual operators handled in Plan 03
+            _ => {}
+        }
+    }
+
+    /// Handle key events in Vim Command mode.
+    fn handle_vim_command_key(&mut self, key: crossterm::event::KeyEvent) {
+        let cmd = self.vim_handler.as_mut()
+            .map(|h| h.handle_key(key))
+            .unwrap_or(VimCommand::None);
+        self.execute_vim_command(cmd);
     }
 
     /// Handle mouse events: click, scroll, drag-select, divider drag (D-19 through D-23).

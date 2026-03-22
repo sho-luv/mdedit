@@ -342,6 +342,129 @@ impl<'a> Editor<'a> {
         self.filepath = Some(path);
     }
 
+    /// Delete the current line and return its content (with trailing newline for line-wise paste).
+    /// Used by dd in vim mode.
+    pub fn delete_current_line(&mut self) -> String {
+        let (row, _) = self.textarea.cursor();
+        let lines = self.textarea.lines();
+        let line_count = lines.len();
+
+        if line_count == 0 {
+            return String::new();
+        }
+
+        let line_text = lines[row].clone();
+        let yanked = format!("{}\n", line_text);
+
+        // Select the entire line and delete it
+        self.textarea.move_cursor(CursorMove::Head);
+        self.textarea.start_selection();
+
+        if row < line_count - 1 {
+            // Not the last line: select to the start of the next line
+            self.textarea.move_cursor(CursorMove::Down);
+            self.textarea.move_cursor(CursorMove::Head);
+        } else {
+            // Last line: select to the end
+            self.textarea.move_cursor(CursorMove::End);
+            // If not the first line, also delete the preceding newline
+            if row > 0 {
+                self.textarea.cancel_selection();
+                // Go to end of previous line
+                self.textarea.move_cursor(CursorMove::Up);
+                self.textarea.move_cursor(CursorMove::End);
+                self.textarea.start_selection();
+                self.textarea.move_cursor(CursorMove::Down);
+                self.textarea.move_cursor(CursorMove::End);
+            }
+        }
+
+        self.textarea.cut();
+        self.modified = true;
+        yanked
+    }
+
+    /// Delete the content of the current line (but keep the line itself).
+    /// Used by cc in vim mode.
+    pub fn delete_current_line_content(&mut self) -> String {
+        let (row, _) = self.textarea.cursor();
+        let line_text = self.textarea.lines()[row].clone();
+
+        if line_text.is_empty() {
+            return String::new();
+        }
+
+        self.textarea.move_cursor(CursorMove::Head);
+        self.textarea.start_selection();
+        self.textarea.move_cursor(CursorMove::End);
+        self.textarea.cut();
+        self.modified = true;
+        line_text
+    }
+
+    /// Cut the current selection and return the cut text.
+    pub fn cut_selection(&mut self) -> String {
+        if let Some(((sr, sc), (er, ec))) = self.textarea.selection_range() {
+            let text = self.extract_selection_text(sr, sc, er, ec);
+            self.textarea.cut();
+            self.modified = true;
+            text
+        } else {
+            String::new()
+        }
+    }
+
+    /// Get the current selection text without cutting.
+    pub fn get_selection_text(&self) -> String {
+        if let Some(((sr, sc), (er, ec))) = self.textarea.selection_range() {
+            self.extract_selection_text(sr, sc, er, ec)
+        } else {
+            String::new()
+        }
+    }
+
+    /// Extract text from selection coordinates.
+    fn extract_selection_text(&self, sr: usize, sc: usize, er: usize, ec: usize) -> String {
+        let lines = self.textarea.lines();
+        if sr == er {
+            // Single line selection
+            let line = &lines[sr];
+            let start = sc.min(line.len());
+            let end = ec.min(line.len());
+            line[start..end].to_string()
+        } else {
+            // Multi-line selection
+            let mut result = String::new();
+            for row in sr..=er {
+                if row >= lines.len() { break; }
+                let line = &lines[row];
+                if row == sr {
+                    let start = sc.min(line.len());
+                    result.push_str(&line[start..]);
+                    result.push('\n');
+                } else if row == er {
+                    let end = ec.min(line.len());
+                    result.push_str(&line[..end]);
+                } else {
+                    result.push_str(line);
+                    result.push('\n');
+                }
+            }
+            result
+        }
+    }
+
+    /// Yank (copy) the current line and return its content (with trailing newline).
+    pub fn yank_current_line(&self) -> String {
+        let (row, _) = self.textarea.cursor();
+        let lines = self.textarea.lines();
+        if row < lines.len() {
+            format!("{}\n", lines[row])
+        } else {
+            String::new()
+        }
+    }
+
     /// Indent multiple lines by inserting 2 spaces at the start of each (D-19).
     fn indent_lines(&mut self, start_row: usize, end_row: usize) {
         let (orig_row, orig_col) = self.textarea.cursor();

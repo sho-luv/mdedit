@@ -182,6 +182,11 @@ impl VimHandler {
         self.mode = VimMode::Visual { line_wise };
     }
 
+    /// Set vim mode to Insert (for change operator).
+    pub fn set_mode_insert(&mut self) {
+        self.mode = VimMode::Insert;
+    }
+
     /// Clear count prefix after use.
     pub fn reset_count(&mut self) {
         self.count_prefix = None;

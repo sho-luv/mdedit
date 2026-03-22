@@ -38,7 +38,11 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
   3. User can define a custom theme in TOML and the editor applies it correctly
   4. User can set `mode = "vim"` or `mode = "nano"` in config and the editor starts in that mode
   5. Editor detects terminal color capability and degrades gracefully (truecolor vs 256-color)
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Config/theme types, built-in themes, CLI args, config loading
+- [ ] 04-02-PLAN.md — Wire theme through all rendering components, replace hardcoded colors
 
 ### Phase 5: Vim Keybindings and Mouse
 **Goal**: Users can navigate and edit using vim-style modal keybindings and interact with the mouse
@@ -92,7 +96,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 | 1. Terminal Editor | v1.0 | 2/2 | Complete | 2026-03-21 |
 | 2. Live Preview | v1.0 | 2/2 | Complete | 2026-03-21 |
 | 3. Polish and Power Features | v1.0 | 2/2 | Complete | 2026-03-22 |
-| 4. Configuration and Themes | v2.0 | 0/? | Not started | - |
+| 4. Configuration and Themes | v2.0 | 0/2 | Planning complete | - |
 | 5. Vim Keybindings and Mouse | v2.0 | 0/? | Not started | - |
 | 6. Clipboard Integration | v2.0 | 0/? | Not started | - |
 | 7. Browser Companion | v2.0 | 0/? | Not started | - |

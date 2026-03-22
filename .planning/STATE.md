@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Power User
 status: unknown
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-03-22T19:11:00.289Z"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-22T19:13:08.637Z"
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 ## Current Position
 
 Phase: 05 (vim-keybindings-and-mouse) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 
 ## Performance Metrics
 
@@ -64,6 +64,8 @@ v2.0 roadmap decisions:
 - [Phase 05]: CursorMoveCmd wrapper enum to enable PartialEq/Eq derives on VimCommand
 - [Phase 05]: Manual terminal init replaces ratatui::run() for EnableMouseCapture
 - [Phase 05]: Split ratio clamped 20-80% to prevent unusable pane sizes
+- [Phase 05]: Central execute_vim_command dispatcher replaces per-mode inline handling
+- [Phase 05]: Line-wise yank stores trailing newline to distinguish from char-wise paste
 
 ### Pending Todos
 
@@ -78,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-22T19:11:00.287Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-03-22T19:13:08.635Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

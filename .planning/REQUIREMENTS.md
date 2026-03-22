@@ -19,14 +19,14 @@ Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 
 - [x] **VIM-01**: Editor starts in Normal mode by default (vim-style)
 - [x] **VIM-02**: User can switch between Normal, Insert, and Visual modes
-- [ ] **VIM-03**: Normal mode supports motions: h/j/k/l, w/b/e, 0/$, gg/G, {/}
-- [ ] **VIM-04**: Normal mode supports operators: d (delete), c (change), y (yank), p/P (paste)
-- [ ] **VIM-05**: Insert mode entered via i/a/o/O/A/I, exited via Esc
+- [x] **VIM-03**: Normal mode supports motions: h/j/k/l, w/b/e, 0/$, gg/G, {/}
+- [x] **VIM-04**: Normal mode supports operators: d (delete), c (change), y (yank), p/P (paste)
+- [x] **VIM-05**: Insert mode entered via i/a/o/O/A/I, exited via Esc
 - [ ] **VIM-06**: Visual mode supports character selection (v) and line selection (V)
 - [ ] **VIM-07**: Command mode supports :w (save), :q (quit), :wq, :q!
 - [x] **VIM-08**: Status bar shows current mode (NORMAL/INSERT/VISUAL/COMMAND)
-- [ ] **VIM-09**: Normal mode supports count prefixes (e.g., 3j, 5dd, 2w)
-- [ ] **VIM-10**: Undo/redo via u and Ctrl+R in Normal mode
+- [x] **VIM-09**: Normal mode supports count prefixes (e.g., 3j, 5dd, 2w)
+- [x] **VIM-10**: Undo/redo via u and Ctrl+R in Normal mode
 
 ### Clipboard
 
@@ -105,14 +105,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONF-05 | Phase 4 | Complete |
 | VIM-01 | Phase 5 | Complete |
 | VIM-02 | Phase 5 | Complete |
-| VIM-03 | Phase 5 | Pending |
-| VIM-04 | Phase 5 | Pending |
-| VIM-05 | Phase 5 | Pending |
+| VIM-03 | Phase 5 | Complete |
+| VIM-04 | Phase 5 | Complete |
+| VIM-05 | Phase 5 | Complete |
 | VIM-06 | Phase 5 | Pending |
 | VIM-07 | Phase 5 | Pending |
 | VIM-08 | Phase 5 | Complete |
-| VIM-09 | Phase 5 | Pending |
-| VIM-10 | Phase 5 | Pending |
+| VIM-09 | Phase 5 | Complete |
+| VIM-10 | Phase 5 | Complete |
 | CLIP-01 | Phase 6 | Pending |
 | CLIP-02 | Phase 6 | Pending |
 | CLIP-03 | Phase 6 | Pending |

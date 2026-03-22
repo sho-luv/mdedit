@@ -98,45 +98,45 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONF-01 | — | Pending |
-| CONF-02 | — | Pending |
-| CONF-03 | — | Pending |
-| CONF-04 | — | Pending |
-| CONF-05 | — | Pending |
-| VIM-01 | — | Pending |
-| VIM-02 | — | Pending |
-| VIM-03 | — | Pending |
-| VIM-04 | — | Pending |
-| VIM-05 | — | Pending |
-| VIM-06 | — | Pending |
-| VIM-07 | — | Pending |
-| VIM-08 | — | Pending |
-| VIM-09 | — | Pending |
-| VIM-10 | — | Pending |
-| CLIP-01 | — | Pending |
-| CLIP-02 | — | Pending |
-| CLIP-03 | — | Pending |
-| CLIP-04 | — | Pending |
-| MOUSE-01 | — | Pending |
-| MOUSE-02 | — | Pending |
-| MOUSE-03 | — | Pending |
-| MOUSE-04 | — | Pending |
-| BROW-01 | — | Pending |
-| BROW-02 | — | Pending |
-| BROW-03 | — | Pending |
-| BROW-04 | — | Pending |
-| BROW-05 | — | Pending |
-| WYS-01 | — | Pending |
-| WYS-02 | — | Pending |
-| WYS-03 | — | Pending |
-| WYS-04 | — | Pending |
-| WYS-05 | — | Pending |
+| CONF-01 | Phase 4 | Pending |
+| CONF-02 | Phase 4 | Pending |
+| CONF-03 | Phase 4 | Pending |
+| CONF-04 | Phase 4 | Pending |
+| CONF-05 | Phase 4 | Pending |
+| VIM-01 | Phase 5 | Pending |
+| VIM-02 | Phase 5 | Pending |
+| VIM-03 | Phase 5 | Pending |
+| VIM-04 | Phase 5 | Pending |
+| VIM-05 | Phase 5 | Pending |
+| VIM-06 | Phase 5 | Pending |
+| VIM-07 | Phase 5 | Pending |
+| VIM-08 | Phase 5 | Pending |
+| VIM-09 | Phase 5 | Pending |
+| VIM-10 | Phase 5 | Pending |
+| CLIP-01 | Phase 6 | Pending |
+| CLIP-02 | Phase 6 | Pending |
+| CLIP-03 | Phase 6 | Pending |
+| CLIP-04 | Phase 6 | Pending |
+| MOUSE-01 | Phase 5 | Pending |
+| MOUSE-02 | Phase 5 | Pending |
+| MOUSE-03 | Phase 5 | Pending |
+| MOUSE-04 | Phase 5 | Pending |
+| BROW-01 | Phase 7 | Pending |
+| BROW-02 | Phase 7 | Pending |
+| BROW-03 | Phase 7 | Pending |
+| BROW-04 | Phase 7 | Pending |
+| BROW-05 | Phase 7 | Pending |
+| WYS-01 | Phase 8 | Pending |
+| WYS-02 | Phase 8 | Pending |
+| WYS-03 | Phase 8 | Pending |
+| WYS-04 | Phase 8 | Pending |
+| WYS-05 | Phase 8 | Pending |
 
 **Coverage:**
 - v2.0 requirements: 33 total
-- Mapped to phases: 0
-- Unmapped: 33 ⚠️
+- Mapped to phases: 33
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-22*
-*Last updated: 2026-03-22 after initial definition*
+*Last updated: 2026-03-22 after roadmap creation*

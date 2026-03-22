@@ -87,10 +87,19 @@ pub struct App<'a> {
     search_match_index: usize,
     /// Total match count for [3/17] display (D-10).
     search_match_count: usize,
+    /// Resolved color theme (wired to rendering in Plan 02).
+    pub theme: crate::theme::Theme,
+    /// Editing mode -- vim or nano (used in Phase 5).
+    pub editing_mode: crate::config::EditingMode,
 }
 
 impl<'a> App<'a> {
-    pub fn new(content: Option<String>, filepath: Option<PathBuf>) -> Self {
+    pub fn new(
+        content: Option<String>,
+        filepath: Option<PathBuf>,
+        theme: crate::theme::Theme,
+        editing_mode: crate::config::EditingMode,
+    ) -> Self {
         App {
             editor: Editor::new(content, filepath),
             mode: AppMode::Editing,
@@ -108,6 +117,8 @@ impl<'a> App<'a> {
             search_cursor_before: (0, 0),
             search_match_index: 0,
             search_match_count: 0,
+            theme,
+            editing_mode,
         }
     }
 

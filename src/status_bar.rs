@@ -1,9 +1,11 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::time::{Duration, Instant};
+
+use crate::theme::Theme;
 
 /// Status bar widget that displays filename, cursor position, modified
 /// indicator, and timed messages (e.g., "Saved" for 2 seconds).
@@ -46,8 +48,9 @@ impl StatusBar {
         filename: &str,
         cursor: (usize, usize),
         modified: bool,
+        theme: &Theme,
     ) {
-        let style = Style::default().bg(Color::DarkGray).fg(Color::White);
+        let style = Style::default().bg(theme.status_bar_bg).fg(theme.status_bar_fg);
 
         // Check if timed message is still active
         if let Some((ref msg, ref when)) = self.timed_message {

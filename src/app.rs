@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -457,7 +457,7 @@ impl<'a> App<'a> {
                     .map(|_| {
                         ratatui::text::Line::from(Span::styled(
                             "\u{2502}",
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(self.theme.divider_fg),
                         ))
                     })
                     .collect();
@@ -486,19 +486,20 @@ impl<'a> App<'a> {
                     self.editor.display_name(),
                     self.editor.cursor_position(),
                     self.editor.is_modified(),
+                    &self.theme,
                 );
             }
             AppMode::ConfirmQuit => {
                 let bar = Paragraph::new(Span::raw(
                     " Unsaved changes. Save? (y/n/Esc)",
                 ))
-                .style(Style::default().bg(Color::Red).fg(Color::White));
+                .style(Style::default().bg(self.theme.confirm_bg).fg(self.theme.confirm_fg));
                 frame.render_widget(bar, status_area);
             }
             AppMode::PromptFilename => {
                 let prompt = format!(" Save as: {}_", self.filename_input);
                 let bar = Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(Color::Blue).fg(Color::White));
+                    .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
                 frame.render_widget(bar, status_area);
             }
             AppMode::Search => {
@@ -510,7 +511,7 @@ impl<'a> App<'a> {
                     format!(" Search: {} [no matches]", self.search_query)
                 };
                 let bar = Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(Color::Blue).fg(Color::White));
+                    .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
                 frame.render_widget(bar, status_area);
             }
         }

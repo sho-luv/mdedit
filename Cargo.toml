@@ -10,6 +10,9 @@ crossterm = "0.29"
 ratatui-textarea = { version = "0.8", features = ["crossterm", "search"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
 unicode-width = "0.2"
 pulldown-cmark = { version = "0.13", features = ["simd"] }
 tui-markdown = "0.3.7"

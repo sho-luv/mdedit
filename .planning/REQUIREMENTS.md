@@ -24,7 +24,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **EDIT-04**: User can save the file with Ctrl+S and see confirmation in status bar
 - [x] **EDIT-05**: User is warned about unsaved changes when attempting to exit
 - [x] **EDIT-06**: Editor displays line numbers in a left gutter
-- [ ] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
+- [x] **EDIT-07**: User can search text with Ctrl+F, see highlighted matches, navigate with Enter/Shift+Enter
 - [x] **EDIT-08**: User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
 - [x] **EDIT-09**: User can indent/outdent lines with Tab/Shift+Tab
 - [x] **EDIT-10**: Editor correctly handles Unicode characters including multi-byte and wide characters
@@ -115,7 +115,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EDIT-04 | Phase 1 | Complete |
 | EDIT-05 | Phase 1 | Complete |
 | EDIT-06 | Phase 1 | Complete |
-| EDIT-07 | Phase 3 | Pending |
+| EDIT-07 | Phase 3 | Complete |
 | EDIT-08 | Phase 3 | Complete |
 | EDIT-09 | Phase 3 | Complete |
 | EDIT-10 | Phase 1 | Complete |

@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Power User
-status: roadmap_complete
-stopped_at: Roadmap created for v2.0
-last_updated: "2026-03-22T15:00:00.000Z"
+status: unknown
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-22T14:50:45.059Z"
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 2
+  completed_plans: 1
 ---
 
 # Project State
@@ -19,16 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Edit markdown and see the rendered result side-by-side in a single terminal app, with zero external dependencies.
-**Current focus:** Phase 4 — Configuration and Themes
+**Current focus:** Phase 04 — configuration-and-themes
 
 ## Current Position
 
-Phase: 4 of 8 (Configuration and Themes) — first phase of v2.0
-Plan: —
-Status: Ready to plan
-Last activity: 2026-03-22 — v2.0 roadmap created (5 phases, 33 requirements mapped)
-
-Progress: [██████░░░░] 60% (3/8 phases complete across all milestones)
+Phase: 04 (configuration-and-themes) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -55,10 +51,14 @@ Carried from v1.0:
 - tui-markdown behind MarkdownRenderer trait for replaceability
 
 v2.0 roadmap decisions:
+
 - Vim as state machine layer over existing editor ops (not replacing editor widget)
 - Config/theme first because it's cross-cutting (every component has hardcoded colors)
 - Mouse support grouped with vim (both change interaction model in app.rs)
 - WYSIWYG last (highest risk, depends on stable vim + theme infrastructure)
+- [Phase 04]: Vim as default EditingMode per user preference
+- [Phase 04]: Ocean theme matches original hardcoded colors for zero visual change
+- [Phase 04]: 256-color fallback uses euclidean distance to 6x6x6 cube
 
 ### Pending Todos
 
@@ -73,6 +73,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-22
-Stopped at: v2.0 roadmap created, ready to plan Phase 4
+Last session: 2026-03-22T14:50:45.057Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None

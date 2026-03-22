@@ -9,11 +9,11 @@ Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 
 ### Configuration
 
-- [ ] **CONF-01**: User can configure settings via `~/.config/mdedit/config.toml`
-- [ ] **CONF-02**: User can select color theme by name in config (`theme = "dracula"`)
-- [ ] **CONF-03**: User can define custom color themes in TOML
-- [ ] **CONF-04**: User can set default editing mode in config (`mode = "vim"` or `mode = "nano"`)
-- [ ] **CONF-05**: Editor respects terminal color capability (256-color and truecolor detection)
+- [x] **CONF-01**: User can configure settings via `~/.config/mdedit/config.toml`
+- [x] **CONF-02**: User can select color theme by name in config (`theme = "dracula"`)
+- [x] **CONF-03**: User can define custom color themes in TOML
+- [x] **CONF-04**: User can set default editing mode in config (`mode = "vim"` or `mode = "nano"`)
+- [x] **CONF-05**: Editor respects terminal color capability (256-color and truecolor detection)
 
 ### Vim Keybindings
 
@@ -98,11 +98,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONF-01 | Phase 4 | Pending |
-| CONF-02 | Phase 4 | Pending |
-| CONF-03 | Phase 4 | Pending |
-| CONF-04 | Phase 4 | Pending |
-| CONF-05 | Phase 4 | Pending |
+| CONF-01 | Phase 4 | Complete |
+| CONF-02 | Phase 4 | Complete |
+| CONF-03 | Phase 4 | Complete |
+| CONF-04 | Phase 4 | Complete |
+| CONF-05 | Phase 4 | Complete |
 | VIM-01 | Phase 5 | Pending |
 | VIM-02 | Phase 5 | Pending |
 | VIM-03 | Phase 5 | Pending |

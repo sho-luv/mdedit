@@ -41,7 +41,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 **Plans**: 2 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Config/theme types, built-in themes, CLI args, config loading
+- [x] 04-01-PLAN.md — Config/theme types, built-in themes, CLI args, config loading
 - [ ] 04-02-PLAN.md — Wire theme through all rendering components, replace hardcoded colors
 
 ### Phase 5: Vim Keybindings and Mouse

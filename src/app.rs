@@ -16,7 +16,7 @@ use crate::file_io;
 use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
 use crate::preview::Preview;
 use crate::status_bar::StatusBar;
-use crate::vim::{InsertPosition, VimCommand, VimHandler, VimMode};
+use crate::vim::{CursorMoveCmd, InsertPosition, Motion, VimCommand, VimHandler, VimMode};
 
 /// Layout mode — controls how the main area is split (D-11, D-12, D-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,7 +206,8 @@ impl<'a> App<'a> {
             // Poll with 50ms timeout so timed status messages can expire
             // and debounced preview can trigger
             if event::poll(Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
+                match event::read()? {
+                    Event::Key(key) => {
                     // IMPORTANT: filter for Press only to avoid double-handling
                     // on Windows and some terminals
                     if key.kind == KeyEventKind::Press {
@@ -232,8 +233,12 @@ impl<'a> App<'a> {
                             _ => {} // ConfirmQuit, PromptFilename, Search keep current
                         }
                     }
+                    }
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse_event(mouse);
+                    }
+                    _ => {} // Event::Resize is a no-op — ratatui re-renders on next draw() (FOUND-06)
                 }
-                // Event::Resize is a no-op — ratatui re-renders on next draw() (FOUND-06)
             }
 
             if self.should_quit {
@@ -627,6 +632,155 @@ impl<'a> App<'a> {
             VimCommand::None => {}
             _ => {}
         }
+    }
+
+    /// Handle mouse events: click, scroll, drag-select, divider drag (D-19 through D-23).
+    fn handle_mouse_event(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::{MouseEventKind, MouseButton};
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let col = mouse.column;
+                let row = mouse.row;
+
+                // Check if click is on divider (D-22)
+                if let Some(div) = self.divider_area {
+                    if col >= div.x && col < div.x + div.width && row >= div.y && row < div.y + div.height {
+                        self.dragging_divider = true;
+                        return;
+                    }
+                }
+
+                // Check if click is in editor area (D-19)
+                if let Some(editor) = self.editor_area {
+                    if col >= editor.x && col < editor.x + editor.width && row >= editor.y && row < editor.y + editor.height {
+                        self.click_to_editor_cursor(col, row, &editor);
+                        return;
+                    }
+                }
+
+                // Click in preview area -- no action (preview is read-only)
+            }
+
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let col = mouse.column;
+                let row = mouse.row;
+
+                // Divider drag (D-22)
+                if self.dragging_divider {
+                    if let Some(editor) = self.editor_area {
+                        // Calculate new split ratio from mouse x position
+                        let total_width = editor.width + 1 + self.preview_area.map(|p| p.width).unwrap_or(0);
+                        if total_width > 0 {
+                            let editor_x_start = editor.x;
+                            let relative_x = col.saturating_sub(editor_x_start);
+                            let new_ratio = ((relative_x as f32 / total_width as f32) * 100.0) as u16;
+                            // Clamp to reasonable bounds (min 20%, max 80%)
+                            self.split_ratio = new_ratio.clamp(20, 80);
+                        }
+                    }
+                    return;
+                }
+
+                // Text drag selection in editor (D-21)
+                if let Some(editor) = self.editor_area {
+                    if col >= editor.x && col < editor.x + editor.width && row >= editor.y && row < editor.y + editor.height {
+                        if !self.drag_selecting {
+                            // Start selection on first drag event
+                            self.editor.textarea_mut().start_selection();
+                            self.drag_selecting = true;
+                            // In vim mode, enter Visual mode (D-21)
+                            if let Some(ref mut handler) = self.vim_handler {
+                                handler.set_mode_visual(false); // char-wise
+                                self.mode = AppMode::Visual;
+                            }
+                        }
+                        // Move cursor to drag position (extends selection)
+                        self.click_to_editor_cursor(col, row, &editor);
+                    }
+                }
+            }
+
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging_divider = false;
+                self.drag_selecting = false;
+            }
+
+            MouseEventKind::ScrollUp => {
+                let col = mouse.column;
+                // Determine which pane to scroll (D-20)
+                if let Some(editor) = self.editor_area {
+                    if col >= editor.x && col < editor.x + editor.width {
+                        // Scroll editor up by 3 lines
+                        for _ in 0..3 {
+                            self.editor.textarea_mut().move_cursor(CursorMove::Up);
+                        }
+                        return;
+                    }
+                }
+                if let Some(preview) = self.preview_area {
+                    if col >= preview.x && col < preview.x + preview.width {
+                        self.preview.scroll_up(3);
+                    }
+                }
+            }
+
+            MouseEventKind::ScrollDown => {
+                let col = mouse.column;
+                if let Some(editor) = self.editor_area {
+                    if col >= editor.x && col < editor.x + editor.width {
+                        for _ in 0..3 {
+                            self.editor.textarea_mut().move_cursor(CursorMove::Down);
+                        }
+                        return;
+                    }
+                }
+                if let Some(preview) = self.preview_area {
+                    if col >= preview.x && col < preview.x + preview.width {
+                        self.preview.scroll_down(3);
+                    }
+                }
+            }
+
+            _ => {} // Other mouse events ignored
+        }
+    }
+
+    /// Translate a screen click position to an editor cursor position (D-19).
+    fn click_to_editor_cursor(&mut self, screen_col: u16, screen_row: u16, editor_area: &Rect) {
+        // Calculate editor-relative position
+        let relative_row = (screen_row - editor_area.y) as usize;
+        let relative_col = (screen_col - editor_area.x) as usize;
+
+        // Account for line number gutter width
+        let total_lines = self.editor.line_count();
+        let lnum_width = crate::highlighter::line_number_width(total_lines);
+
+        // Calculate actual text column (subtract line number width)
+        let text_col = if relative_col > lnum_width {
+            relative_col - lnum_width
+        } else {
+            0
+        };
+
+        // Calculate actual line (add scroll offset)
+        let scroll_top = self.editor.scroll_top();
+        let target_row = scroll_top + relative_row;
+
+        // Clamp to valid range
+        let max_row = total_lines.saturating_sub(1);
+        let clamped_row = target_row.min(max_row);
+
+        // Clamp column to line length
+        let line_len = self.editor.textarea_mut().lines().get(clamped_row).map(|l| l.len()).unwrap_or(0);
+        let clamped_col = text_col.min(line_len);
+
+        // Cancel any existing selection if not drag-selecting
+        if !self.drag_selecting {
+            self.editor.textarea_mut().cancel_selection();
+        }
+
+        self.editor.textarea_mut().move_cursor(CursorMove::Jump(clamped_row as u16, clamped_col as u16));
     }
 
     /// Render the editor, preview, and status bar based on current layout mode.

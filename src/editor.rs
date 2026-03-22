@@ -303,6 +303,11 @@ impl<'a> Editor<'a> {
         &mut self.textarea
     }
 
+    /// Return the current scroll offset (top visible line).
+    pub fn scroll_top(&self) -> usize {
+        self.scroll_top
+    }
+
     /// Whether the buffer has been modified since last save.
     pub fn is_modified(&self) -> bool {
         self.modified

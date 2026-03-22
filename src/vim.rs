@@ -177,6 +177,11 @@ impl VimHandler {
         self.yank_register = text;
     }
 
+    /// Set vim mode to Visual (for mouse drag selection).
+    pub fn set_mode_visual(&mut self, line_wise: bool) {
+        self.mode = VimMode::Visual { line_wise };
+    }
+
     /// Clear count prefix after use.
     pub fn reset_count(&mut self) {
         self.count_prefix = None;

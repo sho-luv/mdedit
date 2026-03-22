@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Power User
 status: unknown
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-22T19:06:21.166Z"
+stopped_at: Completed 05-04-PLAN.md
+last_updated: "2026-03-22T19:11:00.289Z"
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 ## Current Position
 
 Phase: 05 (vim-keybindings-and-mouse) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 
 ## Performance Metrics
 
@@ -62,6 +62,8 @@ v2.0 roadmap decisions:
 - [Phase 04]: Theme passed as owned clone to Editor to avoid lifetime complexity
 - [Phase 05]: VimHandler returns VimCommand enum for app.rs to interpret, keeping editor logic in app layer
 - [Phase 05]: CursorMoveCmd wrapper enum to enable PartialEq/Eq derives on VimCommand
+- [Phase 05]: Manual terminal init replaces ratatui::run() for EnableMouseCapture
+- [Phase 05]: Split ratio clamped 20-80% to prevent unusable pane sizes
 
 ### Pending Todos
 
@@ -76,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-22T19:06:21.164Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-22T19:11:00.287Z
+Stopped at: Completed 05-04-PLAN.md
 Resume file: None

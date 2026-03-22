@@ -60,7 +60,7 @@ Plans:
 - [x] 05-01-PLAN.md — VimHandler state machine, AppMode expansion, mode indicator, cursor shape
 - [ ] 05-02-PLAN.md — Normal mode motions, operators, count prefixes, insert mode entry, undo/redo
 - [ ] 05-03-PLAN.md — Visual mode (v/V), Command mode (:w/:q/:wq/:q!)
-- [ ] 05-04-PLAN.md — Mouse support (click, scroll, drag-select, divider drag)
+- [x] 05-04-PLAN.md — Mouse support (click, scroll, drag-select, divider drag)
 
 ### Phase 6: Clipboard Integration
 **Goal**: Users can copy and paste text to/from the system clipboard, including over SSH

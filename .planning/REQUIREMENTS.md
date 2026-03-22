@@ -37,10 +37,10 @@ Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 
 ### Mouse Support
 
-- [ ] **MOUSE-01**: User can click to position cursor in editor pane
-- [ ] **MOUSE-02**: User can scroll editor and preview panes with mouse wheel
-- [ ] **MOUSE-03**: User can click-drag to select text in editor pane
-- [ ] **MOUSE-04**: User can resize split ratio by dragging the divider
+- [x] **MOUSE-01**: User can click to position cursor in editor pane
+- [x] **MOUSE-02**: User can scroll editor and preview panes with mouse wheel
+- [x] **MOUSE-03**: User can click-drag to select text in editor pane
+- [x] **MOUSE-04**: User can resize split ratio by dragging the divider
 
 ### Browser Companion
 
@@ -117,10 +117,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CLIP-02 | Phase 6 | Pending |
 | CLIP-03 | Phase 6 | Pending |
 | CLIP-04 | Phase 6 | Pending |
-| MOUSE-01 | Phase 5 | Pending |
-| MOUSE-02 | Phase 5 | Pending |
-| MOUSE-03 | Phase 5 | Pending |
-| MOUSE-04 | Phase 5 | Pending |
+| MOUSE-01 | Phase 5 | Complete |
+| MOUSE-02 | Phase 5 | Complete |
+| MOUSE-03 | Phase 5 | Complete |
+| MOUSE-04 | Phase 5 | Complete |
 | BROW-01 | Phase 7 | Pending |
 | BROW-02 | Phase 7 | Pending |
 | BROW-03 | Phase 7 | Pending |

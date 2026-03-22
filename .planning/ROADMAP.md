@@ -54,7 +54,13 @@ Plans:
   3. User can save with :w, quit with :q, and use :wq and :q! from command mode
   4. Status bar displays the current mode (NORMAL/INSERT/VISUAL/COMMAND)
   5. User can click to place cursor, scroll with mouse wheel, drag to select text, and drag the divider to resize panes
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — VimHandler state machine, AppMode expansion, mode indicator, cursor shape
+- [ ] 05-02-PLAN.md — Normal mode motions, operators, count prefixes, insert mode entry, undo/redo
+- [ ] 05-03-PLAN.md — Visual mode (v/V), Command mode (:w/:q/:wq/:q!)
+- [ ] 05-04-PLAN.md — Mouse support (click, scroll, drag-select, divider drag)
 
 ### Phase 6: Clipboard Integration
 **Goal**: Users can copy and paste text to/from the system clipboard, including over SSH
@@ -97,7 +103,7 @@ Plans:
 | 2. Live Preview | v1.0 | 2/2 | Complete | 2026-03-21 |
 | 3. Polish and Power Features | v1.0 | 2/2 | Complete | 2026-03-22 |
 | 4. Configuration and Themes | v2.0 | 0/2 | Planning complete | - |
-| 5. Vim Keybindings and Mouse | v2.0 | 0/? | Not started | - |
+| 5. Vim Keybindings and Mouse | v2.0 | 0/4 | Planning complete | - |
 | 6. Clipboard Integration | v2.0 | 0/? | Not started | - |
 | 7. Browser Companion | v2.0 | 0/? | Not started | - |
 | 8. WYSIWYG Terminal Mode | v2.0 | 0/? | Not started | - |

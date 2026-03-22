@@ -143,6 +143,9 @@ pub struct VimHandler {
     partial_key: Option<char>,
     pub yank_register: String,
     command_buffer: String,
+    /// Tracks whether the last Visual mode was line-wise.
+    /// Needed because operators (d/c/y) set mode to Normal before app executes the command.
+    last_visual_line_wise: bool,
 }
 
 impl VimHandler {
@@ -154,6 +157,7 @@ impl VimHandler {
             partial_key: None,
             yank_register: String::new(),
             command_buffer: String::new(),
+            last_visual_line_wise: false,
         }
     }
 
@@ -177,9 +181,15 @@ impl VimHandler {
         self.yank_register = text;
     }
 
+    /// Whether the last visual mode was line-wise.
+    pub fn was_visual_line_wise(&self) -> bool {
+        self.last_visual_line_wise
+    }
+
     /// Set vim mode to Visual (for mouse drag selection).
     pub fn set_mode_visual(&mut self, line_wise: bool) {
         self.mode = VimMode::Visual { line_wise };
+        self.last_visual_line_wise = line_wise;
     }
 
     /// Set vim mode to Insert (for change operator).
@@ -480,12 +490,14 @@ impl VimHandler {
             // Visual mode
             KeyCode::Char('v') => {
                 self.mode = VimMode::Visual { line_wise: false };
+                self.last_visual_line_wise = false;
                 self.reset_count();
                 self.pending_operator = None;
                 VimCommand::EnterVisual { line_wise: false }
             }
             KeyCode::Char('V') => {
                 self.mode = VimMode::Visual { line_wise: true };
+                self.last_visual_line_wise = true;
                 self.reset_count();
                 self.pending_operator = None;
                 VimCommand::EnterVisual { line_wise: true }
@@ -529,12 +541,71 @@ impl VimHandler {
 
     /// Handle key events in Visual mode.
     fn handle_visual_key(&mut self, key: KeyEvent) -> VimCommand {
+        let line_wise = matches!(self.mode, VimMode::Visual { line_wise: true });
+
+        // Handle partial key sequences (gg in visual mode)
+        if let Some(partial) = self.partial_key.take() {
+            if partial == 'g' && key.code == KeyCode::Char('g') {
+                return VimCommand::Move(CursorMoveCmd::Top);
+            }
+            // Any other key after 'g' -- ignore partial and fall through
+        }
+
         match key.code {
+            // Exit visual mode
             KeyCode::Esc => {
                 self.mode = VimMode::Normal;
                 VimCommand::ExitVisual
             }
-            // All other keys return None for now
+            // v in char-wise visual exits, V in line-wise visual exits
+            KeyCode::Char('v') if !line_wise => {
+                self.mode = VimMode::Normal;
+                VimCommand::ExitVisual
+            }
+            KeyCode::Char('V') if line_wise => {
+                self.mode = VimMode::Normal;
+                VimCommand::ExitVisual
+            }
+
+            // Motions extend selection
+            KeyCode::Char('h') => VimCommand::Move(CursorMoveCmd::Back),
+            KeyCode::Char('j') => VimCommand::Move(CursorMoveCmd::Down),
+            KeyCode::Char('k') => VimCommand::Move(CursorMoveCmd::Up),
+            KeyCode::Char('l') => VimCommand::Move(CursorMoveCmd::Forward),
+            KeyCode::Char('w') | KeyCode::Char('e') => VimCommand::Move(CursorMoveCmd::WordForward),
+            KeyCode::Char('b') => VimCommand::Move(CursorMoveCmd::WordBack),
+            KeyCode::Char('0') => VimCommand::Move(CursorMoveCmd::Head),
+            KeyCode::Char('$') => VimCommand::Move(CursorMoveCmd::End),
+            KeyCode::Char('G') => VimCommand::Move(CursorMoveCmd::Bottom),
+            KeyCode::Char('{') => VimCommand::Move(CursorMoveCmd::ParagraphBack),
+            KeyCode::Char('}') => VimCommand::Move(CursorMoveCmd::ParagraphForward),
+            KeyCode::Char('g') => {
+                self.partial_key = Some('g');
+                VimCommand::None
+            }
+
+            // Operators act on selection
+            KeyCode::Char('d') | KeyCode::Char('x') => {
+                self.mode = VimMode::Normal;
+                VimCommand::VisualDelete
+            }
+            KeyCode::Char('c') => {
+                self.mode = VimMode::Normal;
+                VimCommand::VisualChange
+            }
+            KeyCode::Char('y') => {
+                self.mode = VimMode::Normal;
+                VimCommand::VisualYank
+            }
+            KeyCode::Char('>') => {
+                // Stay in visual mode for indent
+                VimCommand::VisualIndent
+            }
+            KeyCode::Char('<') => {
+                // Stay in visual mode for outdent
+                VimCommand::VisualOutdent
+            }
+
             _ => VimCommand::None,
         }
     }

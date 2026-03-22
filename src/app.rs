@@ -16,7 +16,7 @@ use crate::file_io;
 use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
 use crate::preview::Preview;
 use crate::status_bar::StatusBar;
-use crate::vim::{CursorMoveCmd, InsertPosition, Motion, VimCommand, VimHandler, VimMode};
+use crate::vim::{InsertPosition, Motion, VimCommand, VimHandler};
 
 /// Layout mode — controls how the main area is split (D-11, D-12, D-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -604,8 +604,15 @@ impl<'a> App<'a> {
             VimCommand::ExitInsert => {
                 self.mode = AppMode::Normal;
             }
-            VimCommand::EnterVisual { line_wise: _ } => {
-                self.editor.textarea_mut().start_selection();
+            VimCommand::EnterVisual { line_wise } => {
+                if line_wise {
+                    // Line-wise: select from start of current line
+                    self.editor.textarea_mut().move_cursor(CursorMove::Head);
+                    self.editor.textarea_mut().start_selection();
+                    self.editor.textarea_mut().move_cursor(CursorMove::End);
+                } else {
+                    self.editor.textarea_mut().start_selection();
+                }
                 self.mode = AppMode::Visual;
             }
             VimCommand::ExitVisual => {
@@ -668,9 +675,134 @@ impl<'a> App<'a> {
             VimCommand::ContentChanged => {
                 self.mark_content_changed();
             }
+            VimCommand::VisualDelete => {
+                let line_wise = self.vim_handler.as_ref()
+                    .map(|h| h.was_visual_line_wise())
+                    .unwrap_or(false);
+                if line_wise {
+                    // Line-wise: expand selection to full lines, then cut
+                    if let Some(((sr, _), (er, _))) = self.editor.textarea_mut().selection_range() {
+                        self.editor.textarea_mut().cancel_selection();
+                        // Select full lines sr..=er
+                        let mut yanked = String::new();
+                        let lines = self.editor.textarea_mut().lines().to_vec();
+                        for r in sr..=er {
+                            if r < lines.len() {
+                                yanked.push_str(&lines[r]);
+                                yanked.push('\n');
+                            }
+                        }
+                        if let Some(handler) = self.vim_handler.as_mut() {
+                            handler.set_yank_register(yanked);
+                        }
+                        // Delete lines from bottom to top to avoid index shift
+                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                        for _ in sr..=er {
+                            self.editor.delete_current_line();
+                        }
+                    }
+                } else {
+                    // Char-wise: yank selected text then cut
+                    let text = self.editor.get_selection_text();
+                    if let Some(handler) = self.vim_handler.as_mut() {
+                        handler.set_yank_register(text);
+                    }
+                    self.editor.textarea_mut().cut();
+                }
+                self.editor.textarea_mut().cancel_selection();
+                self.mark_content_changed();
+                self.mode = AppMode::Normal;
+            }
+            VimCommand::VisualChange => {
+                let line_wise = self.vim_handler.as_ref()
+                    .map(|h| h.was_visual_line_wise())
+                    .unwrap_or(false);
+                if line_wise {
+                    if let Some(((sr, _), (er, _))) = self.editor.textarea_mut().selection_range() {
+                        self.editor.textarea_mut().cancel_selection();
+                        let mut yanked = String::new();
+                        let lines = self.editor.textarea_mut().lines().to_vec();
+                        for r in sr..=er {
+                            if r < lines.len() {
+                                yanked.push_str(&lines[r]);
+                                yanked.push('\n');
+                            }
+                        }
+                        if let Some(handler) = self.vim_handler.as_mut() {
+                            handler.set_yank_register(yanked);
+                        }
+                        // Delete all selected lines, then leave an empty line for insert
+                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                        // Delete content of first line, then remaining lines
+                        self.editor.delete_current_line_content();
+                        for _ in (sr + 1)..=er {
+                            // Delete the line below (now at position sr+1, but after deletion it shifts)
+                            self.editor.textarea_mut().move_cursor(CursorMove::End);
+                            self.editor.textarea_mut().delete_next_char(); // delete newline joining next line
+                            self.editor.textarea_mut().start_selection();
+                            self.editor.textarea_mut().move_cursor(CursorMove::End);
+                            self.editor.textarea_mut().cut();
+                        }
+                    }
+                } else {
+                    let text = self.editor.get_selection_text();
+                    if let Some(handler) = self.vim_handler.as_mut() {
+                        handler.set_yank_register(text);
+                    }
+                    self.editor.textarea_mut().cut();
+                }
+                self.editor.textarea_mut().cancel_selection();
+                self.mark_content_changed();
+                self.mode = AppMode::Insert;
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_mode_insert();
+                }
+            }
+            VimCommand::VisualYank => {
+                let text = self.editor.get_selection_text();
+                if let Some(handler) = self.vim_handler.as_mut() {
+                    handler.set_yank_register(text);
+                }
+                self.editor.textarea_mut().cancel_selection();
+                self.mode = AppMode::Normal;
+            }
+            VimCommand::VisualIndent => {
+                if let Some(((sr, _), (er, _))) = self.editor.textarea_mut().selection_range() {
+                    self.editor.textarea_mut().cancel_selection();
+                    for row in sr..=er {
+                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, 0));
+                        self.editor.textarea_mut().insert_str("  ");
+                    }
+                    // Re-select the range for continued visual mode operations
+                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                    self.editor.textarea_mut().start_selection();
+                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(er as u16, 0));
+                    self.editor.textarea_mut().move_cursor(CursorMove::End);
+                    self.mark_content_changed();
+                }
+            }
+            VimCommand::VisualOutdent => {
+                if let Some(((sr, _), (er, _))) = self.editor.textarea_mut().selection_range() {
+                    self.editor.textarea_mut().cancel_selection();
+                    for row in sr..=er {
+                        let line = self.editor.textarea_mut().lines()[row].clone();
+                        let spaces = line.chars().take(2).take_while(|c| *c == ' ').count();
+                        if spaces > 0 {
+                            self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, 0));
+                            for _ in 0..spaces {
+                                self.editor.textarea_mut().delete_next_char();
+                            }
+                        }
+                    }
+                    // Re-select the range for continued visual mode operations
+                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                    self.editor.textarea_mut().start_selection();
+                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(er as u16, 0));
+                    self.editor.textarea_mut().move_cursor(CursorMove::End);
+                    self.mark_content_changed();
+                }
+            }
             VimCommand::None | VimCommand::CommandAppend(_) | VimCommand::CommandBackspace => {}
-            // Visual operators handled in Plan 03
-            _ => {}
         }
     }
 
@@ -874,15 +1006,19 @@ impl<'a> App<'a> {
 
     /// Handle key events in Vim Visual mode.
     fn handle_vim_visual_key(&mut self, key: crossterm::event::KeyEvent) {
+        // Ctrl+P toggles layout mode
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+            self.layout_mode = self.layout_mode.next();
+            self.status_bar.set_message(self.layout_mode.label());
+            return;
+        }
+
         let cmd = self.vim_handler.as_mut()
             .map(|h| h.handle_key(key))
             .unwrap_or(VimCommand::None);
 
         match cmd {
-            VimCommand::ExitVisual => {
-                self.execute_vim_command(cmd);
-            }
-            // Allow motions in visual mode to extend selection
+            // Motions extend selection (selection is active, just move cursor)
             VimCommand::Move(cursor_cmd) => {
                 self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
             }
@@ -891,8 +1027,11 @@ impl<'a> App<'a> {
                     self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
                 }
             }
-            VimCommand::None => {} // Visual operators handled in Plan 03
-            _ => {}
+            // All other commands (ExitVisual, VisualDelete, etc.) go through execute
+            VimCommand::None => {}
+            other => {
+                self.execute_vim_command(other);
+            }
         }
     }
 

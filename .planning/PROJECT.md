@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A terminal-based markdown editor with live rendered preview. A single Rust TUI binary that lets you edit raw markdown on one side and see it rendered on the other — no browser, no bloated IDE, no vault lock-in. Built for people who live in the terminal and write markdown daily.
+A terminal-based markdown editor with live rendered preview, syntax highlighting, search, and text selection. A single Rust TUI binary that lets you edit raw markdown on one side and see it rendered on the other — no browser, no bloated IDE, no vault lock-in. Built for people who live in the terminal and write markdown daily.
 
 ## Core Value
 
@@ -12,35 +12,41 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Open any .md file from the command line — v1.0
+- ✓ Edit markdown with basic text editing (insert, delete, select, undo/redo) — v1.0
+- ✓ Line numbers in the editor pane — v1.0
+- ✓ Markdown syntax highlighting in the editor pane — v1.0
+- ✓ Live rendered preview pane updating as you type — v1.0
+- ✓ Side-by-side layout (editor left, preview right) — v1.0
+- ✓ Toggle to fullscreen editor or fullscreen preview via hotkey — v1.0
+- ✓ Save file (Ctrl+S) — v1.0
+- ✓ Create new file if path doesn't exist — v1.0
+- ✓ Status bar with filename, cursor position, modified indicator — v1.0
+- ✓ Handle common markdown: headings, bold, italic, code blocks, links, lists, blockquotes, tables, horizontal rules — v1.0
+- ✓ Scroll sync between editor and preview — v1.0
+- ✓ Fast startup (<100ms) — v1.0
+- ✓ Single compiled binary, no runtime dependencies — v1.0
+- ✓ Works over SSH (no clipboard dependency for basic use) — v1.0
+- ✓ Text search with Ctrl+F and match highlighting — v1.0
+- ✓ Text selection with Shift+arrows — v1.0
+- ✓ Indent/outdent with Tab/Shift+Tab — v1.0
 
 ### Active
 
-- [ ] Open any .md file from the command line
-- [ ] Edit markdown with basic text editing (insert, delete, select, undo/redo)
-- [ ] Line numbers in the editor pane
-- [ ] Markdown syntax highlighting in the editor pane
-- [ ] Live rendered preview pane updating as you type
-- [ ] Side-by-side layout (editor left, preview right)
-- [ ] Toggle to fullscreen editor or fullscreen preview via hotkey
-- [ ] Save file (Ctrl+S or equivalent)
-- [ ] Create new file if path doesn't exist
-- [ ] Status bar with filename, cursor position, modified indicator
-- [ ] Handle common markdown: headings, bold, italic, code blocks, links, lists, blockquotes, tables, horizontal rules
-- [ ] Scroll sync between editor and preview
-- [ ] Fast startup (<100ms)
-- [ ] Single compiled binary, no runtime dependencies
-- [ ] Works over SSH (no clipboard dependency for basic use)
+- [ ] Vim-style keybindings as default editing mode (replacing nano-style)
+- [ ] Configurable color themes
+- [ ] Browser companion with GitHub-accurate rendering (local only, not SSH)
+- [ ] WYSIWYG terminal editing mode (`--wysiwyg` flag)
+- [ ] Clipboard integration (copy/paste via OSC 52 or platform-native)
+- [ ] Adjustable split ratio
+- [ ] Mouse support for scrolling and clicking
 
 ### Out of Scope
 
-- Vim/emacs keybindings — adds complexity, basic editing is sufficient for v1
 - File browser/picker — open files via command line argument, not an in-app navigator
-- Multiple open files/tabs — one file at a time for v1
+- Multiple open files/tabs — one file at a time
 - Image rendering in preview — terminal image protocols are fragmented and unreliable
 - Plugin system — premature abstraction
-- Config file — sensible defaults only for v1
-- Clipboard integration — fragmented across terminals/SSH, defer to v2
 - Frontmatter parsing — not needed for core editing experience
 - Blog-specific features — this is a general markdown editor
 
@@ -49,9 +55,9 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 - Born from frustration editing the React2Shell blog post — no good terminal tool combines editing with rendering
 - Existing tools: glow (view only), vim (edit only, no render), VS Code (bloated), Obsidian (vault-locked)
 - Research confirmed no single compiled binary exists that does both edit + live preview
-- Closest tools: Splitmark (Node.js, not single binary), MarkLn (Python, not single binary)
-- Building blocks exist in Rust: ratatui (TUI framework), tui-markdown (rendering), tui-textarea (editing)
-- Target user: developers who write markdown in the terminal and want to see what it looks like without leaving
+- v1.0 shipped with 1,508 LOC Rust across 8 source files
+- Tech stack: ratatui 0.30, ratatui-textarea 0.8, pulldown-cmark 0.13, tui-markdown 0.3.7, syntect 5.3
+- User wants vim keybindings as default for v2 and WYSIWYG terminal mode
 
 ## Constraints
 
@@ -65,10 +71,14 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Rust with ratatui | Best TUI ecosystem, building blocks exist (tui-markdown, tui-textarea), single binary output | — Pending |
-| Side-by-side default with toggle | Most useful layout, toggle adds flexibility without complexity | — Pending |
-| Basic editing only (no vim mode) | Reduces scope significantly, vim users can use vim | — Pending |
-| No config file in v1 | Ship sensible defaults, add config when users request it | — Pending |
+| Rust with ratatui | Best TUI ecosystem, building blocks exist (tui-markdown, tui-textarea), single binary output | ✓ Good — 1,508 LOC, fast builds |
+| Side-by-side default with toggle | Most useful layout, toggle adds flexibility without complexity | ✓ Good — Ctrl+P cycles 3 modes |
+| Basic editing only (no vim mode) in v1 | Reduces scope significantly, vim users can use vim | ✓ Good for v1 — switching to vim default in v2 |
+| No config file in v1 | Ship sensible defaults, add config when users request it | ✓ Good — config coming in v2 |
+| ratatui-textarea 0.8 (not tui-textarea 0.7) | 0.7 incompatible with ratatui 0.30 | ✓ Good — ratatui org fork, well maintained |
+| Custom render path for editor | tui-textarea Widget has no per-span styling API | ✓ Good — enables syntax highlighting + selection + search overlays |
+| 80ms debounce for preview | Sweet spot between responsiveness and performance | ✓ Good — feels instant |
+| tui-markdown behind trait | Experimental library, may need replacement | ✓ Good — MarkdownRenderer trait allows swap |
 
 ## Evolution
 
@@ -88,4 +98,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-21 after initialization*
+*Last updated: 2026-03-22 after v1.0 milestone*

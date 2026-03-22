@@ -42,7 +42,7 @@ Full details: `.planning/milestones/v1.0-ROADMAP.md`
 
 Plans:
 - [x] 04-01-PLAN.md — Config/theme types, built-in themes, CLI args, config loading
-- [ ] 04-02-PLAN.md — Wire theme through all rendering components, replace hardcoded colors
+- [x] 04-02-PLAN.md — Wire theme through all rendering components, replace hardcoded colors
 
 ### Phase 5: Vim Keybindings and Mouse
 **Goal**: Users can navigate and edit using vim-style modal keybindings and interact with the mouse

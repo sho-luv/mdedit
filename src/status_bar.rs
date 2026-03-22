@@ -41,6 +41,10 @@ impl StatusBar {
     ///
     /// If a timed message is active, it is displayed. Otherwise, the normal
     /// status line is shown: filename, modified indicator, and cursor position.
+    ///
+    /// When `vim_mode` is Some, renders vim mode indicator on the left with the
+    /// given background color and mode-appropriate hints. When None (nano mode),
+    /// renders the classic nano-style status bar.
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -49,6 +53,7 @@ impl StatusBar {
         cursor: (usize, usize),
         modified: bool,
         theme: &Theme,
+        vim_mode: Option<(&str, ratatui::style::Color)>,
     ) {
         let style = Style::default().bg(theme.status_bar_bg).fg(theme.status_bar_fg);
 
@@ -61,35 +66,74 @@ impl StatusBar {
             }
         }
 
-        // Normal status line: filename + modified indicator on the left,
-        // keybinding hints + cursor position on the right (D-15, CHRM-02)
         let mod_indicator = if modified { " [+]" } else { "" };
         let (row, col) = cursor;
-        let left = format!(" {}{}", filename, mod_indicator);
-        let hints = "Ctrl+S Save | Ctrl+P Preview | Ctrl+Q Quit";
-        let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
-        let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
 
-        // Use hints if terminal is wide enough; fall back to just cursor position
-        let available = area.width as usize;
-        let right = if left.len() + right_with_hints.len() <= available {
-            right_with_hints
+        if let Some((label, bg_color)) = vim_mode {
+            // Vim mode status bar: mode label on the left with mode bg color
+            let mode_label = format!(" {} ", label);
+            let file_info = format!(" {}{}", filename, mod_indicator);
+
+            // Mode-appropriate hints
+            let hints = if label.contains("NORMAL") {
+                ":w Save | :q Quit"
+            } else if label.contains("INSERT") {
+                "Esc Normal"
+            } else if label.contains("VISUAL") {
+                "d Del | y Yank | Esc Normal"
+            } else {
+                ""
+            };
+
+            let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
+            let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
+
+            let available = area.width as usize;
+            let right = if mode_label.len() + file_info.len() + right_with_hints.len() <= available {
+                right_with_hints
+            } else {
+                right_no_hints
+            };
+
+            let used = mode_label.len() + file_info.len() + right.len();
+            let spacer_width = if available > used { available - used } else { 1 };
+            let spacer = " ".repeat(spacer_width);
+
+            let line = Line::from(vec![
+                Span::styled(mode_label, Style::default().bg(bg_color).fg(theme.status_bar_fg)),
+                Span::raw(file_info),
+                Span::raw(spacer),
+                Span::raw(right),
+            ]);
+
+            let paragraph = Paragraph::new(line).style(style);
+            frame.render_widget(paragraph, area);
         } else {
-            right_no_hints
-        };
+            // Nano mode status bar (unchanged)
+            let left = format!(" {}{}", filename, mod_indicator);
+            let hints = "Ctrl+S Save | Ctrl+P Preview | Ctrl+Q Quit";
+            let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
+            let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
 
-        // Calculate spacer width to push right-side text to the right edge
-        let used = left.len() + right.len();
-        let spacer_width = if available > used { available - used } else { 1 };
-        let spacer = " ".repeat(spacer_width);
+            let available = area.width as usize;
+            let right = if left.len() + right_with_hints.len() <= available {
+                right_with_hints
+            } else {
+                right_no_hints
+            };
 
-        let line = Line::from(vec![
-            Span::raw(left),
-            Span::raw(spacer),
-            Span::raw(right),
-        ]);
+            let used = left.len() + right.len();
+            let spacer_width = if available > used { available - used } else { 1 };
+            let spacer = " ".repeat(spacer_width);
 
-        let paragraph = Paragraph::new(line).style(style);
-        frame.render_widget(paragraph, area);
+            let line = Line::from(vec![
+                Span::raw(left),
+                Span::raw(spacer),
+                Span::raw(right),
+            ]);
+
+            let paragraph = Paragraph::new(line).style(style);
+            frame.render_widget(paragraph, area);
+        }
     }
 }

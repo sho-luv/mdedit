@@ -11,6 +11,7 @@ mod markdown;
 mod preview;
 mod status_bar;
 mod theme;
+mod vim;
 
 #[derive(Parser)]
 #[command(name = "mdedit", about = "A terminal markdown editor")]

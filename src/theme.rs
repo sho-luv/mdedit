@@ -38,6 +38,11 @@ pub struct Theme {
     pub prompt_bg: Color,
     pub prompt_fg: Color,
     pub syntect_theme: String,
+    // Vim mode indicator colors
+    pub mode_normal_bg: Color,
+    pub mode_insert_bg: Color,
+    pub mode_visual_bg: Color,
+    pub mode_command_bg: Color,
 }
 
 impl Theme {
@@ -60,6 +65,10 @@ impl Theme {
             prompt_bg: Color::Blue,
             prompt_fg: Color::White,
             syntect_theme: "base16-ocean.dark".to_string(),
+            mode_normal_bg: Color::DarkGray,
+            mode_insert_bg: Color::Rgb(0, 100, 0),
+            mode_visual_bg: Color::Rgb(0, 0, 139),
+            mode_command_bg: Color::Blue,
         }
     }
 
@@ -82,6 +91,10 @@ impl Theme {
             prompt_bg: Color::Rgb(98, 114, 164),
             prompt_fg: Color::Rgb(248, 248, 242),
             syntect_theme: "Solarized (dark)".to_string(),
+            mode_normal_bg: Color::Rgb(68, 71, 90),
+            mode_insert_bg: Color::Rgb(80, 250, 123),
+            mode_visual_bg: Color::Rgb(189, 147, 249),
+            mode_command_bg: Color::Rgb(98, 114, 164),
         }
     }
 
@@ -104,6 +117,10 @@ impl Theme {
             prompt_bg: Color::Rgb(38, 139, 210),
             prompt_fg: Color::Rgb(253, 246, 227),
             syntect_theme: "Solarized (light)".to_string(),
+            mode_normal_bg: Color::Rgb(238, 232, 213),
+            mode_insert_bg: Color::Rgb(133, 153, 0),
+            mode_visual_bg: Color::Rgb(38, 139, 210),
+            mode_command_bg: Color::Rgb(38, 139, 210),
         }
     }
 
@@ -126,6 +143,10 @@ impl Theme {
             prompt_bg: Color::Rgb(69, 133, 136),
             prompt_fg: Color::Rgb(235, 219, 178),
             syntect_theme: "base16-ocean.dark".to_string(),
+            mode_normal_bg: Color::Rgb(80, 73, 69),
+            mode_insert_bg: Color::Rgb(152, 151, 26),
+            mode_visual_bg: Color::Rgb(69, 133, 136),
+            mode_command_bg: Color::Rgb(69, 133, 136),
         }
     }
 
@@ -164,6 +185,10 @@ impl Theme {
         t.confirm_fg = rgb_to_256(t.confirm_fg);
         t.prompt_bg = rgb_to_256(t.prompt_bg);
         t.prompt_fg = rgb_to_256(t.prompt_fg);
+        t.mode_normal_bg = rgb_to_256(t.mode_normal_bg);
+        t.mode_insert_bg = rgb_to_256(t.mode_insert_bg);
+        t.mode_visual_bg = rgb_to_256(t.mode_visual_bg);
+        t.mode_command_bg = rgb_to_256(t.mode_command_bg);
         t
     }
 
@@ -249,6 +274,26 @@ impl Theme {
         if let Some(ref s) = custom.syntect_theme {
             t.syntect_theme = s.clone();
         }
+        if let Some(ref s) = custom.mode_normal_bg {
+            if let Some(c) = parse_color(s) {
+                t.mode_normal_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.mode_insert_bg {
+            if let Some(c) = parse_color(s) {
+                t.mode_insert_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.mode_visual_bg {
+            if let Some(c) = parse_color(s) {
+                t.mode_visual_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.mode_command_bg {
+            if let Some(c) = parse_color(s) {
+                t.mode_command_bg = c;
+            }
+        }
         t
     }
 }
@@ -274,6 +319,10 @@ pub struct ThemeColors {
     pub prompt_bg: Option<String>,
     pub prompt_fg: Option<String>,
     pub syntect_theme: Option<String>,
+    pub mode_normal_bg: Option<String>,
+    pub mode_insert_bg: Option<String>,
+    pub mode_visual_bg: Option<String>,
+    pub mode_command_bg: Option<String>,
 }
 
 /// Parse a color string into a ratatui Color.

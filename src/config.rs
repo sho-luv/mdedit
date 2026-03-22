@@ -37,6 +37,10 @@ pub struct CustomThemeColors {
     pub prompt_bg: Option<String>,
     pub prompt_fg: Option<String>,
     pub syntect_theme: Option<String>,
+    pub mode_normal_bg: Option<String>,
+    pub mode_insert_bg: Option<String>,
+    pub mode_visual_bg: Option<String>,
+    pub mode_command_bg: Option<String>,
 }
 
 impl CustomThemeColors {
@@ -59,6 +63,10 @@ impl CustomThemeColors {
             prompt_bg: self.prompt_bg.clone(),
             prompt_fg: self.prompt_fg.clone(),
             syntect_theme: self.syntect_theme.clone(),
+            mode_normal_bg: self.mode_normal_bg.clone(),
+            mode_insert_bg: self.mode_insert_bg.clone(),
+            mode_visual_bg: self.mode_visual_bg.clone(),
+            mode_command_bg: self.mode_command_bg.clone(),
         }
     }
 }

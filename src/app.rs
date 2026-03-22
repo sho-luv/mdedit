@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
@@ -15,6 +16,7 @@ use crate::file_io;
 use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
 use crate::preview::Preview;
 use crate::status_bar::StatusBar;
+use crate::vim::{InsertPosition, VimCommand, VimHandler, VimMode};
 
 /// Layout mode — controls how the main area is split (D-11, D-12, D-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,8 +48,16 @@ impl LayoutMode {
 /// status bar displays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
-    /// Normal editing mode.
+    /// Nano-style editing mode.
     Editing,
+    /// Vim Normal mode.
+    Normal,
+    /// Vim Insert mode.
+    Insert,
+    /// Vim Visual mode.
+    Visual,
+    /// Vim Command mode (: prompt).
+    Command,
     /// Prompt: "Unsaved changes. Save? (y/n/Esc)" (D-13)
     ConfirmQuit,
     /// Prompt: "Save as: ___" for untitled buffers (D-02)
@@ -91,6 +101,8 @@ pub struct App<'a> {
     pub theme: crate::theme::Theme,
     /// Editing mode -- vim or nano (used in Phase 5).
     pub editing_mode: crate::config::EditingMode,
+    /// Vim key handler state machine (Some when vim mode, None when nano).
+    vim_handler: Option<VimHandler>,
 }
 
 impl<'a> App<'a> {
@@ -100,9 +112,13 @@ impl<'a> App<'a> {
         theme: crate::theme::Theme,
         editing_mode: crate::config::EditingMode,
     ) -> Self {
+        let is_vim = editing_mode == crate::config::EditingMode::Vim;
+        let initial_mode = if is_vim { AppMode::Normal } else { AppMode::Editing };
+        let vim_handler = if is_vim { Some(VimHandler::new()) } else { None };
+
         App {
             editor: Editor::new(content, filepath, theme.clone()),
-            mode: AppMode::Editing,
+            mode: initial_mode,
             should_quit: false,
             filename_input: String::new(),
             status_bar: StatusBar::new(),
@@ -119,6 +135,7 @@ impl<'a> App<'a> {
             search_match_count: 0,
             theme,
             editing_mode,
+            vim_handler,
         }
     }
 
@@ -177,9 +194,24 @@ impl<'a> App<'a> {
                     if key.kind == KeyEventKind::Press {
                         match self.mode {
                             AppMode::Editing => self.handle_editing_key(key),
+                            AppMode::Normal => self.handle_vim_key(key),
+                            AppMode::Insert => self.handle_vim_insert_key(key),
+                            AppMode::Visual => self.handle_vim_visual_key(key),
+                            AppMode::Command => self.handle_vim_command_key(key),
                             AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
                             AppMode::PromptFilename => self.handle_prompt_filename_key(key),
                             AppMode::Search => self.handle_search_key(key),
+                        }
+
+                        // Cursor shape changes per mode
+                        match self.mode {
+                            AppMode::Normal | AppMode::Visual | AppMode::Command => {
+                                let _ = crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBlock);
+                            }
+                            AppMode::Insert | AppMode::Editing => {
+                                let _ = crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
+                            }
+                            _ => {} // ConfirmQuit, PromptFilename, Search keep current
                         }
                     }
                 }
@@ -276,6 +308,15 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Return to the appropriate editing mode (Normal for vim, Editing for nano).
+    fn return_to_editing_mode(&mut self) {
+        if self.vim_handler.is_some() {
+            self.mode = AppMode::Normal;
+        } else {
+            self.mode = AppMode::Editing;
+        }
+    }
+
     /// Handle key events in the "Unsaved changes" confirmation prompt (D-13).
     fn handle_confirm_quit_key(&mut self, key: crossterm::event::KeyEvent) {
         match key.code {
@@ -286,7 +327,7 @@ impl<'a> App<'a> {
                         self.should_quit = true;
                     } else {
                         // Save failed — return to editing
-                        self.mode = AppMode::Editing;
+                        self.return_to_editing_mode();
                     }
                 } else {
                     // No filepath — prompt for filename, then quit after save
@@ -301,7 +342,7 @@ impl<'a> App<'a> {
             }
             KeyCode::Esc => {
                 // Cancel — return to editing
-                self.mode = AppMode::Editing;
+                self.return_to_editing_mode();
             }
             _ => {
                 // Ignore other keys in this mode
@@ -323,11 +364,11 @@ impl<'a> App<'a> {
                         if self.quit_after_save {
                             self.should_quit = true;
                         } else {
-                            self.mode = AppMode::Editing;
+                            self.return_to_editing_mode();
                         }
                     } else {
                         // Save failed — return to editing
-                        self.mode = AppMode::Editing;
+                        self.return_to_editing_mode();
                     }
                     self.quit_after_save = false;
                 }
@@ -335,7 +376,7 @@ impl<'a> App<'a> {
             KeyCode::Esc => {
                 self.filename_input.clear();
                 self.quit_after_save = false;
-                self.mode = AppMode::Editing;
+                self.return_to_editing_mode();
             }
             KeyCode::Backspace => {
                 self.filename_input.pop();
@@ -357,7 +398,7 @@ impl<'a> App<'a> {
                 // Clear search pattern to prevent ghost highlights (Pitfall 4)
                 let _ = self.editor.textarea_mut().set_search_pattern("");
                 self.search_query.clear();
-                self.mode = AppMode::Editing;
+                self.return_to_editing_mode();
             }
             KeyCode::Enter => {
                 if self.search_match_count > 0 {
@@ -426,6 +467,150 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Handle key events in Vim Normal mode.
+    fn handle_vim_key(&mut self, key: crossterm::event::KeyEvent) {
+        // Ctrl+P toggles layout mode -- intercept before vim handler
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
+            self.layout_mode = self.layout_mode.next();
+            self.status_bar.set_message(self.layout_mode.label());
+            return;
+        }
+
+        let handler = self.vim_handler.as_mut().unwrap();
+        let cmd = handler.handle_key(key);
+
+        match cmd {
+            VimCommand::EnterInsert(pos) => {
+                self.mode = AppMode::Insert;
+                // Position cursor based on insert variant
+                match pos {
+                    InsertPosition::AfterCursor => {
+                        self.editor.textarea_mut().move_cursor(CursorMove::Forward);
+                    }
+                    InsertPosition::LineStart => {
+                        self.editor.textarea_mut().move_cursor(CursorMove::Head);
+                    }
+                    InsertPosition::LineEnd => {
+                        self.editor.textarea_mut().move_cursor(CursorMove::End);
+                    }
+                    InsertPosition::NewLineBelow => {
+                        self.editor.textarea_mut().move_cursor(CursorMove::End);
+                        self.editor.textarea_mut().insert_newline();
+                        self.content_dirty = true;
+                        self.last_edit_time = Some(Instant::now());
+                    }
+                    InsertPosition::NewLineAbove => {
+                        self.editor.textarea_mut().move_cursor(CursorMove::Head);
+                        self.editor.textarea_mut().insert_newline();
+                        self.editor.textarea_mut().move_cursor(CursorMove::Up);
+                        self.content_dirty = true;
+                        self.last_edit_time = Some(Instant::now());
+                    }
+                    InsertPosition::BeforeCursor => {} // no movement needed
+                }
+            }
+            VimCommand::EnterCommand => {
+                self.mode = AppMode::Command;
+            }
+            VimCommand::EnterVisual { line_wise: _ } => {
+                self.mode = AppMode::Visual;
+                self.editor.textarea_mut().start_selection();
+            }
+            VimCommand::EnterSearch => {
+                self.search_query.clear();
+                self.search_cursor_before = self.editor.cursor_position();
+                self.search_match_index = 0;
+                self.search_match_count = 0;
+                self.mode = AppMode::Search;
+            }
+            VimCommand::None => {}
+            _ => {} // Other commands handled in Plans 02/03
+        }
+    }
+
+    /// Handle key events in Vim Insert mode.
+    fn handle_vim_insert_key(&mut self, key: crossterm::event::KeyEvent) {
+        let handler = self.vim_handler.as_mut().unwrap();
+        let cmd = handler.handle_key(key);
+
+        match cmd {
+            VimCommand::ExitInsert => {
+                self.mode = AppMode::Normal;
+            }
+            VimCommand::None => {
+                // Forward all non-Esc keys to textarea for text input
+                let changed = self.editor.textarea_mut().input_without_shortcuts(key);
+                if changed {
+                    self.content_dirty = true;
+                    self.last_edit_time = Some(Instant::now());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle key events in Vim Visual mode.
+    fn handle_vim_visual_key(&mut self, key: crossterm::event::KeyEvent) {
+        let handler = self.vim_handler.as_mut().unwrap();
+        let cmd = handler.handle_key(key);
+
+        match cmd {
+            VimCommand::ExitVisual => {
+                self.editor.textarea_mut().cancel_selection();
+                self.mode = AppMode::Normal;
+            }
+            VimCommand::None => {} // Visual motions handled in Plan 03
+            _ => {}
+        }
+    }
+
+    /// Handle key events in Vim Command mode.
+    fn handle_vim_command_key(&mut self, key: crossterm::event::KeyEvent) {
+        let handler = self.vim_handler.as_mut().unwrap();
+        let cmd = handler.handle_key(key);
+
+        match cmd {
+            VimCommand::ExitCommand => {
+                self.mode = AppMode::Normal;
+            }
+            VimCommand::Save => {
+                self.mode = AppMode::Normal;
+                if self.editor.filepath().is_some() {
+                    self.do_save();
+                } else {
+                    self.filename_input = String::new();
+                    self.quit_after_save = false;
+                    self.mode = AppMode::PromptFilename;
+                }
+            }
+            VimCommand::Quit { force } => {
+                self.mode = AppMode::Normal;
+                if force || !self.editor.is_modified() {
+                    self.should_quit = true;
+                } else {
+                    self.mode = AppMode::ConfirmQuit;
+                }
+            }
+            VimCommand::SaveAndQuit => {
+                self.mode = AppMode::Normal;
+                if self.editor.filepath().is_some() {
+                    if self.do_save() {
+                        self.should_quit = true;
+                    }
+                } else {
+                    self.filename_input = String::new();
+                    self.quit_after_save = true;
+                    self.mode = AppMode::PromptFilename;
+                }
+            }
+            VimCommand::CommandAppend(_) | VimCommand::CommandBackspace => {
+                // Handler maintains buffer; nothing else to do
+            }
+            VimCommand::None => {}
+            _ => {}
+        }
+    }
+
     /// Render the editor, preview, and status bar based on current layout mode.
     fn render(&mut self, frame: &mut Frame) {
         let outer = Layout::default()
@@ -487,7 +672,51 @@ impl<'a> App<'a> {
                     self.editor.cursor_position(),
                     self.editor.is_modified(),
                     &self.theme,
+                    None,
                 );
+            }
+            AppMode::Normal => {
+                let mode_info = Some(("-- NORMAL --", self.theme.mode_normal_bg));
+                self.status_bar.render(
+                    frame,
+                    status_area,
+                    self.editor.display_name(),
+                    self.editor.cursor_position(),
+                    self.editor.is_modified(),
+                    &self.theme,
+                    mode_info,
+                );
+            }
+            AppMode::Insert => {
+                let mode_info = Some(("-- INSERT --", self.theme.mode_insert_bg));
+                self.status_bar.render(
+                    frame,
+                    status_area,
+                    self.editor.display_name(),
+                    self.editor.cursor_position(),
+                    self.editor.is_modified(),
+                    &self.theme,
+                    mode_info,
+                );
+            }
+            AppMode::Visual => {
+                let mode_info = Some(("-- VISUAL --", self.theme.mode_visual_bg));
+                self.status_bar.render(
+                    frame,
+                    status_area,
+                    self.editor.display_name(),
+                    self.editor.cursor_position(),
+                    self.editor.is_modified(),
+                    &self.theme,
+                    mode_info,
+                );
+            }
+            AppMode::Command => {
+                let cmd = self.vim_handler.as_ref().map(|h| h.command_buffer()).unwrap_or("");
+                let prompt = format!(" :{}_", cmd);
+                let bar = Paragraph::new(Span::raw(prompt))
+                    .style(Style::default().bg(self.theme.mode_command_bg).fg(self.theme.status_bar_fg));
+                frame.render_widget(bar, status_area);
             }
             AppMode::ConfirmQuit => {
                 let bar = Paragraph::new(Span::raw(

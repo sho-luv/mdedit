@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Power User
 status: unknown
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-22T19:13:08.637Z"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-03-22T19:18:01.537Z"
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -66,6 +66,7 @@ v2.0 roadmap decisions:
 - [Phase 05]: Split ratio clamped 20-80% to prevent unusable pane sizes
 - [Phase 05]: Central execute_vim_command dispatcher replaces per-mode inline handling
 - [Phase 05]: Line-wise yank stores trailing newline to distinguish from char-wise paste
+- [Phase 05]: Track line-wise state via last_visual_line_wise field rather than checking current mode
 
 ### Pending Todos
 
@@ -80,6 +81,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-22T19:13:08.635Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-03-22T19:18:01.534Z
+Stopped at: Completed 05-03-PLAN.md
 Resume file: None

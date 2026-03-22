@@ -22,8 +22,8 @@ Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 - [x] **VIM-03**: Normal mode supports motions: h/j/k/l, w/b/e, 0/$, gg/G, {/}
 - [x] **VIM-04**: Normal mode supports operators: d (delete), c (change), y (yank), p/P (paste)
 - [x] **VIM-05**: Insert mode entered via i/a/o/O/A/I, exited via Esc
-- [ ] **VIM-06**: Visual mode supports character selection (v) and line selection (V)
-- [ ] **VIM-07**: Command mode supports :w (save), :q (quit), :wq, :q!
+- [x] **VIM-06**: Visual mode supports character selection (v) and line selection (V)
+- [x] **VIM-07**: Command mode supports :w (save), :q (quit), :wq, :q!
 - [x] **VIM-08**: Status bar shows current mode (NORMAL/INSERT/VISUAL/COMMAND)
 - [x] **VIM-09**: Normal mode supports count prefixes (e.g., 3j, 5dd, 2w)
 - [x] **VIM-10**: Undo/redo via u and Ctrl+R in Normal mode
@@ -108,8 +108,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VIM-03 | Phase 5 | Complete |
 | VIM-04 | Phase 5 | Complete |
 | VIM-05 | Phase 5 | Complete |
-| VIM-06 | Phase 5 | Pending |
-| VIM-07 | Phase 5 | Pending |
+| VIM-06 | Phase 5 | Complete |
+| VIM-07 | Phase 5 | Complete |
 | VIM-08 | Phase 5 | Complete |
 | VIM-09 | Phase 5 | Complete |
 | VIM-10 | Phase 5 | Complete |

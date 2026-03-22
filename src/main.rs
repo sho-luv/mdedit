@@ -1,5 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use std::io::stdout;
 use std::path::PathBuf;
 
 mod app;
@@ -62,9 +68,20 @@ fn main() -> Result<()> {
         None
     };
 
-    ratatui::run(|terminal| {
-        let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode);
-        app.run(terminal)
-    })?;
-    Ok(())
+    // Manual terminal init with mouse capture (D-18)
+    enable_raw_mode()?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode);
+    let result = app.run(&mut terminal);
+
+    // Cleanup: disable mouse, leave alternate screen, disable raw mode
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
 }

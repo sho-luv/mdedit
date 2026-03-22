@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -103,6 +103,18 @@ pub struct App<'a> {
     pub editing_mode: crate::config::EditingMode,
     /// Vim key handler state machine (Some when vim mode, None when nano).
     vim_handler: Option<VimHandler>,
+    /// Split ratio as percentage (0-100) for editor pane width. Default 50.
+    split_ratio: u16,
+    /// Track layout areas for mouse hit testing.
+    editor_area: Option<Rect>,
+    /// Track preview area for mouse hit testing.
+    preview_area: Option<Rect>,
+    /// Track divider area for mouse hit testing.
+    divider_area: Option<Rect>,
+    /// Whether user is currently dragging the divider.
+    dragging_divider: bool,
+    /// Whether user is currently drag-selecting text.
+    drag_selecting: bool,
 }
 
 impl<'a> App<'a> {
@@ -136,6 +148,12 @@ impl<'a> App<'a> {
             theme,
             editing_mode,
             vim_handler,
+            split_ratio: 50,
+            editor_area: None,
+            preview_area: None,
+            divider_area: None,
+            dragging_divider: false,
+            drag_selecting: false,
         }
     }
 
@@ -178,7 +196,7 @@ impl<'a> App<'a> {
     }
 
     /// Main event loop. Draws the UI and processes events until quit.
-    pub fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    pub fn run(&mut self, terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>) -> Result<()> {
         loop {
             // Update preview before drawing (debounced)
             self.maybe_update_preview();
@@ -628,11 +646,16 @@ impl<'a> App<'a> {
                 let chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
-                        Constraint::Percentage(50),
+                        Constraint::Percentage(self.split_ratio),
                         Constraint::Length(1),
-                        Constraint::Percentage(50),
+                        Constraint::Percentage(100 - self.split_ratio),
                     ])
                     .split(body_area);
+
+                // Store areas for mouse hit testing
+                self.editor_area = Some(chunks[0]);
+                self.divider_area = Some(chunks[1]);
+                self.preview_area = Some(chunks[2]);
 
                 // Editor left — with syntax highlighting (D-09)
                 self.editor.render_highlighted(frame, chunks[0], &search_query);
@@ -655,9 +678,15 @@ impl<'a> App<'a> {
                 self.preview.render(frame, chunks[2], &self.preview_text);
             }
             LayoutMode::EditorOnly => {
+                self.editor_area = Some(body_area);
+                self.divider_area = None;
+                self.preview_area = None;
                 self.editor.render_highlighted(frame, body_area, &search_query);
             }
             LayoutMode::PreviewOnly => {
+                self.editor_area = None;
+                self.divider_area = None;
+                self.preview_area = Some(body_area);
                 self.preview.render(frame, body_area, &self.preview_text);
             }
         }

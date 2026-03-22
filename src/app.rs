@@ -101,7 +101,7 @@ impl<'a> App<'a> {
         editing_mode: crate::config::EditingMode,
     ) -> Self {
         App {
-            editor: Editor::new(content, filepath),
+            editor: Editor::new(content, filepath, theme.clone()),
             mode: AppMode::Editing,
             should_quit: false,
             filename_input: String::new(),

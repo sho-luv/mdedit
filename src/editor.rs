@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -8,6 +8,7 @@ use ratatui_textarea::{CursorMove, TextArea};
 use std::path::PathBuf;
 
 use crate::highlighter::{self, MarkdownHighlighter};
+use crate::theme::Theme;
 
 /// Actions that the editor can signal to the application layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,11 +27,13 @@ pub struct Editor<'a> {
     highlighter: MarkdownHighlighter,
     /// Persistent scroll top for the custom highlighted rendering.
     scroll_top: usize,
+    /// Color theme for editor rendering.
+    theme: Theme,
 }
 
 impl<'a> Editor<'a> {
     /// Create a new editor, optionally pre-loaded with content and a file path.
-    pub fn new(content: Option<String>, filepath: Option<PathBuf>) -> Self {
+    pub fn new(content: Option<String>, filepath: Option<PathBuf>, theme: Theme) -> Self {
         let mut textarea = match content {
             Some(text) => {
                 let lines: Vec<String> = text.lines().map(String::from).collect();
@@ -43,18 +46,20 @@ impl<'a> Editor<'a> {
             None => TextArea::default(),
         };
 
-        // Line numbers: dimmed, right-aligned (D-08)
-        textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+        // Line numbers: styled from theme
+        textarea.set_line_number_style(Style::default().fg(theme.line_number_fg));
 
         // Set tab length as safety net (D-17); we intercept Tab ourselves
         textarea.set_tab_length(2);
 
+        let highlighter = MarkdownHighlighter::new(&theme.syntect_theme);
         Editor {
             textarea,
             modified: false,
             filepath,
-            highlighter: MarkdownHighlighter::new(),
+            highlighter,
             scroll_top: 0,
+            theme,
         }
     }
 
@@ -441,13 +446,13 @@ impl<'a> Editor<'a> {
         };
 
         // Selection highlight style (D-13)
-        let selection_style = Style::default().bg(Color::Rgb(68, 68, 102));
+        let selection_style = Style::default().bg(self.theme.selection_bg);
 
         // Build final lines with line numbers prepended
         let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(height);
         for (i, hl_line) in highlighted.into_iter().enumerate() {
             let row = scroll_top + i;
-            let lnum = highlighter::line_number_span(row, total_lines);
+            let lnum = highlighter::line_number_span(row, total_lines, self.theme.line_number_fg);
 
             let mut content_spans = hl_line.spans;
 
@@ -462,9 +467,9 @@ impl<'a> Editor<'a> {
                         // Determine if this is the active match (bright cyan) or other match (yellow)
                         let is_active = row == cursor_row && start == active_match_byte;
                         let highlight_style = if is_active {
-                            Style::default().bg(Color::Cyan).fg(Color::Black) // Active match
+                            Style::default().bg(self.theme.search_active_bg).fg(self.theme.search_active_fg)
                         } else {
-                            Style::default().bg(Color::Yellow).fg(Color::Black) // Other matches
+                            Style::default().bg(self.theme.search_match_bg).fg(self.theme.search_match_fg)
                         };
                         content_spans = apply_highlight_overlay(content_spans, start, end, highlight_style);
                     }

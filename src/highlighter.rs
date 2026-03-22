@@ -4,7 +4,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
-/// Markdown-aware syntax highlighter using syntect with the base16-ocean.dark theme (D-08).
+/// Markdown-aware syntax highlighter using syntect with a configurable theme.
 ///
 /// Converts raw markdown text into syntax-highlighted ratatui `Line`s suitable for
 /// rendering in a `Paragraph` widget. Highlights headings, bold/italic markers,
@@ -15,11 +15,19 @@ pub struct MarkdownHighlighter {
 }
 
 impl MarkdownHighlighter {
-    pub fn new() -> Self {
+    pub fn new(syntect_theme_name: &str) -> Self {
         let ss = SyntaxSet::load_defaults_newlines();
         let ts = ThemeSet::load_defaults();
-        // Use base16-ocean.dark -- terminal-compatible theme (D-08)
-        let theme = ts.themes["base16-ocean.dark"].clone();
+        let theme = match ts.themes.get(syntect_theme_name) {
+            Some(t) => t.clone(),
+            None => {
+                eprintln!(
+                    "Warning: syntect theme '{}' not found, falling back to base16-ocean.dark",
+                    syntect_theme_name
+                );
+                ts.themes["base16-ocean.dark"].clone()
+            }
+        };
         MarkdownHighlighter {
             syntax_set: ss,
             theme,
@@ -133,11 +141,11 @@ fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
     ratatui_style
 }
 
-/// Build a line number span (dimmed, right-aligned) matching tui-textarea style.
-pub fn line_number_span(row: usize, total_lines: usize) -> Span<'static> {
+/// Build a line number span (right-aligned) with a configurable color.
+pub fn line_number_span(row: usize, total_lines: usize, line_number_fg: Color) -> Span<'static> {
     let width = digit_count(total_lines);
     let num = format!("{:>width$} ", row + 1, width = width);
-    Span::styled(num, Style::default().fg(Color::DarkGray))
+    Span::styled(num, Style::default().fg(line_number_fg))
 }
 
 /// Return the total width of the line number column (digits + 1 space).

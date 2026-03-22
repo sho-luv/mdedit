@@ -44,7 +44,7 @@ Plans:
   3. Preview updates live as the user types with no perceptible lag
   4. User can toggle between split view, editor-only, and preview-only with a hotkey
   5. Editor pane has markdown-aware syntax highlighting and keybinding hints are visible in the status bar
-**Plans:** 1/2 plans executed
+**Plans:** 2 plans
 
 Plans:
 - [x] 02-01-PLAN.md — Preview component, MarkdownRenderer trait, split layout, Ctrl+P toggle, debounced preview, keybinding hints
@@ -59,10 +59,11 @@ Plans:
   2. User can search text with Ctrl+F, see highlighted matches, and navigate between matches with Enter/Shift+Enter
   3. User can select text with Shift+arrow keys and Ctrl+Shift+arrow keys
   4. User can indent lines with Tab and outdent with Shift+Tab
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 03-01: Scroll sync and text interaction polish
+- [ ] 03-01-PLAN.md — Selection keybindings, indent/outdent, scroll sync, selection highlighting
+- [ ] 03-02-PLAN.md — Text search with Ctrl+F, incremental match highlighting, navigation
 
 ## Progress
 
@@ -72,5 +73,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Terminal Editor | 2/2 | Complete | 2026-03-21 |
-| 2. Live Preview | 1/2 | In Progress|  |
-| 3. Polish and Power Features | 0/1 | Not started | - |
+| 2. Live Preview | 2/2 | Complete | 2026-03-21 |
+| 3. Polish and Power Features | 0/2 | Not started | - |

@@ -50,6 +50,19 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 - Frontmatter parsing — not needed for core editing experience
 - Blog-specific features — this is a general markdown editor
 
+## Current Milestone: v2.0 Power User
+
+**Goal:** Transform mdedit from a basic editor into a power-user tool with vim-style editing, WYSIWYG mode, configurable themes, and clipboard integration.
+
+**Target features:**
+- Vim-style keybindings as default editing mode (modal: normal/insert/visual)
+- WYSIWYG terminal editing mode (`--wysiwyg` flag) — edit rendered markdown inline
+- Configurable color themes (TOML config file)
+- Browser companion with GitHub-accurate rendering (local only)
+- Clipboard integration (OSC 52 + platform-native fallback)
+- Adjustable split ratio
+- Mouse support for scrolling and clicking
+
 ## Context
 
 - Born from frustration editing the React2Shell blog post — no good terminal tool combines editing with rendering
@@ -57,7 +70,7 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 - Research confirmed no single compiled binary exists that does both edit + live preview
 - v1.0 shipped with 1,508 LOC Rust across 8 source files
 - Tech stack: ratatui 0.30, ratatui-textarea 0.8, pulldown-cmark 0.13, tui-markdown 0.3.7, syntect 5.3
-- User wants vim keybindings as default for v2 and WYSIWYG terminal mode
+- v2.0 focus: vim keybindings as default, WYSIWYG terminal mode, configurable themes, browser companion
 
 ## Constraints
 
@@ -98,4 +111,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-22 after v1.0 milestone*
+*Last updated: 2026-03-22 after v2.0 milestone start*

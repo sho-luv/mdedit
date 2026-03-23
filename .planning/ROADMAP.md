@@ -71,7 +71,10 @@ Plans:
   2. User can copy text in another application and paste it into mdedit via vim (p/P) or Ctrl+V
   3. Clipboard works when running mdedit over SSH (via OSC 52)
   4. On local sessions, clipboard uses platform-native tools (pbcopy on macOS, xclip on Linux) when available
-**Plans**: TBD
+**Plans**: 1 plan
+
+Plans:
+- [ ] 06-01-PLAN.md — Clipboard module (OSC 52 + platform-native), wire yank/paste, nano Ctrl+C/V, bracketed paste
 
 ### Phase 7: Browser Companion
 **Goal**: Users can view their markdown rendered with GitHub-accurate styling in a browser
@@ -104,6 +107,6 @@ Plans:
 | 3. Polish and Power Features | v1.0 | 2/2 | Complete | 2026-03-22 |
 | 4. Configuration and Themes | v2.0 | 0/2 | Planning complete | - |
 | 5. Vim Keybindings and Mouse | v2.0 | 3/4 | In Progress|  |
-| 6. Clipboard Integration | v2.0 | 0/? | Not started | - |
+| 6. Clipboard Integration | v2.0 | 0/1 | Planning complete | - |
 | 7. Browser Companion | v2.0 | 0/? | Not started | - |
 | 8. WYSIWYG Terminal Mode | v2.0 | 0/? | Not started | - |

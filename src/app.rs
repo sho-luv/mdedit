@@ -244,6 +244,11 @@ impl<'a> App<'a> {
                     Event::Mouse(mouse) => {
                         self.handle_mouse_event(mouse);
                     }
+                    Event::Paste(text) => {
+                        // Bracketed paste: insert text at cursor regardless of mode
+                        self.editor.textarea_mut().insert_str(&text);
+                        self.mark_content_changed();
+                    }
                     _ => {} // Event::Resize is a no-op — ratatui re-renders on next draw() (FOUND-06)
                 }
             }
@@ -293,6 +298,31 @@ impl<'a> App<'a> {
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
             self.layout_mode = self.layout_mode.next();
             self.status_bar.set_message(self.layout_mode.label()); // D-16
+            return;
+        }
+
+        // Ctrl+C copies selection to system clipboard (nano mode)
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
+            let text = self.editor.get_selection_text();
+            if !text.is_empty() {
+                if self.clipboard.write(&text).is_ok() {
+                    self.status_bar.set_message("Copied to clipboard");
+                } else {
+                    self.status_bar.set_message("Clipboard unavailable");
+                }
+                self.editor.textarea_mut().cancel_selection();
+            }
+            return;
+        }
+
+        // Ctrl+V pastes from system clipboard (nano mode)
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('v') {
+            if let Ok(text) = self.clipboard.read() {
+                if !text.is_empty() {
+                    self.editor.textarea_mut().insert_str(&text);
+                    self.mark_content_changed();
+                }
+            }
             return;
         }
 
@@ -497,6 +527,20 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Write text to both the internal vim yank register and the system clipboard.
+    /// Shows a one-time warning if clipboard is unavailable.
+    fn yank_to_clipboard(&mut self, text: &str) {
+        if let Some(ref mut handler) = self.vim_handler {
+            handler.set_yank_register(text.to_string());
+        }
+        if let Err(_e) = self.clipboard.write(text) {
+            if !self.clipboard_warned {
+                self.status_bar.set_message("System clipboard unavailable - using internal register");
+                self.clipboard_warned = true;
+            }
+        }
+    }
+
     /// Mark content as changed (sets dirty flag and edit timestamp).
     fn mark_content_changed(&mut self) {
         self.content_dirty = true;
@@ -547,9 +591,12 @@ impl<'a> App<'a> {
                 self.mark_content_changed();
             }
             VimCommand::PasteAfter => {
-                let text = self.vim_handler.as_ref()
-                    .map(|h| h.yank_register().to_string())
-                    .unwrap_or_default();
+                let text = match self.clipboard.read() {
+                    Ok(clip_text) if !clip_text.is_empty() => clip_text,
+                    _ => self.vim_handler.as_ref()
+                        .map(|h| h.yank_register().to_string())
+                        .unwrap_or_default(),
+                };
                 if !text.is_empty() {
                     if text.ends_with('\n') {
                         // Line-wise paste: paste on next line
@@ -565,9 +612,12 @@ impl<'a> App<'a> {
                 }
             }
             VimCommand::PasteBefore => {
-                let text = self.vim_handler.as_ref()
-                    .map(|h| h.yank_register().to_string())
-                    .unwrap_or_default();
+                let text = match self.clipboard.read() {
+                    Ok(clip_text) if !clip_text.is_empty() => clip_text,
+                    _ => self.vim_handler.as_ref()
+                        .map(|h| h.yank_register().to_string())
+                        .unwrap_or_default(),
+                };
                 if !text.is_empty() {
                     if text.ends_with('\n') {
                         // Line-wise paste: paste on previous line
@@ -699,9 +749,7 @@ impl<'a> App<'a> {
                                 yanked.push('\n');
                             }
                         }
-                        if let Some(handler) = self.vim_handler.as_mut() {
-                            handler.set_yank_register(yanked);
-                        }
+                        self.yank_to_clipboard(&yanked);
                         // Delete lines from bottom to top to avoid index shift
                         self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
                         for _ in sr..=er {
@@ -711,9 +759,7 @@ impl<'a> App<'a> {
                 } else {
                     // Char-wise: yank selected text then cut
                     let text = self.editor.get_selection_text();
-                    if let Some(handler) = self.vim_handler.as_mut() {
-                        handler.set_yank_register(text);
-                    }
+                    self.yank_to_clipboard(&text);
                     self.editor.textarea_mut().cut();
                 }
                 self.editor.textarea_mut().cancel_selection();
@@ -735,9 +781,7 @@ impl<'a> App<'a> {
                                 yanked.push('\n');
                             }
                         }
-                        if let Some(handler) = self.vim_handler.as_mut() {
-                            handler.set_yank_register(yanked);
-                        }
+                        self.yank_to_clipboard(&yanked);
                         // Delete all selected lines, then leave an empty line for insert
                         self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
                         // Delete content of first line, then remaining lines
@@ -753,9 +797,7 @@ impl<'a> App<'a> {
                     }
                 } else {
                     let text = self.editor.get_selection_text();
-                    if let Some(handler) = self.vim_handler.as_mut() {
-                        handler.set_yank_register(text);
-                    }
+                    self.yank_to_clipboard(&text);
                     self.editor.textarea_mut().cut();
                 }
                 self.editor.textarea_mut().cancel_selection();
@@ -767,9 +809,7 @@ impl<'a> App<'a> {
             }
             VimCommand::VisualYank => {
                 let text = self.editor.get_selection_text();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.editor.textarea_mut().cancel_selection();
                 self.mode = AppMode::Normal;
             }
@@ -819,9 +859,7 @@ impl<'a> App<'a> {
             Motion::Line => {
                 // dd: delete current line
                 let text = self.editor.delete_current_line();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
             }
             Motion::ToEnd => {
@@ -829,9 +867,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(CursorMove::End);
                 let text = self.editor.cut_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
             }
             Motion::ToStart => {
@@ -839,9 +875,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(CursorMove::Head);
                 let text = self.editor.cut_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
             }
             other => {
@@ -849,9 +883,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(cursor_move);
                 let text = self.editor.cut_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
             }
         }
@@ -863,9 +895,7 @@ impl<'a> App<'a> {
             Motion::Line => {
                 // cc: delete line content but keep the line, enter insert
                 let text = self.editor.delete_current_line_content();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
                 self.mode = AppMode::Insert;
                 if let Some(handler) = self.vim_handler.as_mut() {
@@ -876,9 +906,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(CursorMove::End);
                 let text = self.editor.cut_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
                 self.mode = AppMode::Insert;
                 if let Some(handler) = self.vim_handler.as_mut() {
@@ -890,9 +918,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(cursor_move);
                 let text = self.editor.cut_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
                 self.mark_content_changed();
                 self.mode = AppMode::Insert;
                 if let Some(handler) = self.vim_handler.as_mut() {
@@ -908,18 +934,14 @@ impl<'a> App<'a> {
             Motion::Line => {
                 // yy: yank current line
                 let text = self.editor.yank_current_line();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
             }
             Motion::ToEnd => {
                 self.editor.textarea_mut().start_selection();
                 self.editor.textarea_mut().move_cursor(CursorMove::End);
                 let text = self.editor.get_selection_text();
                 self.editor.textarea_mut().cancel_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
             }
             other => {
                 let cursor_move = Self::motion_to_cursor_move(&other);
@@ -927,9 +949,7 @@ impl<'a> App<'a> {
                 self.editor.textarea_mut().move_cursor(cursor_move);
                 let text = self.editor.get_selection_text();
                 self.editor.textarea_mut().cancel_selection();
-                if let Some(handler) = self.vim_handler.as_mut() {
-                    handler.set_yank_register(text);
-                }
+                self.yank_to_clipboard(&text);
             }
         }
     }

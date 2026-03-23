@@ -115,6 +115,10 @@ pub struct App<'a> {
     dragging_divider: bool,
     /// Whether user is currently drag-selecting text.
     drag_selecting: bool,
+    /// System clipboard provider (OSC 52 + platform-native).
+    clipboard: Box<dyn crate::clipboard::ClipboardProvider>,
+    /// Whether we've already shown the "clipboard unavailable" warning.
+    clipboard_warned: bool,
 }
 
 impl<'a> App<'a> {
@@ -123,6 +127,7 @@ impl<'a> App<'a> {
         filepath: Option<PathBuf>,
         theme: crate::theme::Theme,
         editing_mode: crate::config::EditingMode,
+        clipboard: Box<dyn crate::clipboard::ClipboardProvider>,
     ) -> Self {
         let is_vim = editing_mode == crate::config::EditingMode::Vim;
         let initial_mode = if is_vim { AppMode::Normal } else { AppMode::Editing };
@@ -154,6 +159,8 @@ impl<'a> App<'a> {
             divider_area: None,
             dragging_divider: false,
             drag_selecting: false,
+            clipboard,
+            clipboard_warned: false,
         }
     }
 

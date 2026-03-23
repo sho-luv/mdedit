@@ -30,10 +30,10 @@ Requirements for v2.0 Power User milestone. Each maps to roadmap phases.
 
 ### Clipboard
 
-- [ ] **CLIP-01**: User can copy selected text to system clipboard via vim yank (y) or Ctrl+C
-- [ ] **CLIP-02**: User can paste from system clipboard via vim paste (p/P) or Ctrl+V
-- [ ] **CLIP-03**: Clipboard works over SSH via OSC 52 escape sequence
-- [ ] **CLIP-04**: Clipboard falls back to platform-native (pbcopy/xclip) when available locally
+- [x] **CLIP-01**: User can copy selected text to system clipboard via vim yank (y) or Ctrl+C
+- [x] **CLIP-02**: User can paste from system clipboard via vim paste (p/P) or Ctrl+V
+- [x] **CLIP-03**: Clipboard works over SSH via OSC 52 escape sequence
+- [x] **CLIP-04**: Clipboard falls back to platform-native (pbcopy/xclip) when available locally
 
 ### Mouse Support
 
@@ -113,10 +113,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | VIM-08 | Phase 5 | Complete |
 | VIM-09 | Phase 5 | Complete |
 | VIM-10 | Phase 5 | Complete |
-| CLIP-01 | Phase 6 | Pending |
-| CLIP-02 | Phase 6 | Pending |
-| CLIP-03 | Phase 6 | Pending |
-| CLIP-04 | Phase 6 | Pending |
+| CLIP-01 | Phase 6 | Complete |
+| CLIP-02 | Phase 6 | Complete |
+| CLIP-03 | Phase 6 | Complete |
+| CLIP-04 | Phase 6 | Complete |
 | MOUSE-01 | Phase 5 | Complete |
 | MOUSE-02 | Phase 5 | Complete |
 | MOUSE-03 | Phase 5 | Complete |

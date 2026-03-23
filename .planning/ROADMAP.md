@@ -74,7 +74,7 @@ Plans:
 **Plans**: 1 plan
 
 Plans:
-- [ ] 06-01-PLAN.md — Clipboard module (OSC 52 + platform-native), wire yank/paste, nano Ctrl+C/V, bracketed paste
+- [x] 06-01-PLAN.md — Clipboard module (OSC 52 + platform-native), wire yank/paste, nano Ctrl+C/V, bracketed paste
 
 ### Phase 7: Browser Companion
 **Goal**: Users can view their markdown rendered with GitHub-accurate styling in a browser

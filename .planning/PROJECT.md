@@ -33,13 +33,16 @@ Edit markdown and see the rendered result side-by-side in a single terminal app,
 
 ### Active
 
-- [ ] Vim-style keybindings as default editing mode (replacing nano-style)
-- [ ] Configurable color themes
 - [ ] Browser companion with GitHub-accurate rendering (local only, not SSH)
 - [ ] WYSIWYG terminal editing mode (`--wysiwyg` flag)
-- [ ] Clipboard integration (copy/paste via OSC 52 or platform-native)
-- [ ] Adjustable split ratio
-- [ ] Mouse support for scrolling and clicking
+
+### Validated (v2.0)
+
+- ✓ Vim-style keybindings as default editing mode — Phase 5
+- ✓ Configurable color themes — Phase 4
+- ✓ Clipboard integration (OSC 52 primary, platform-native fallback) — Phase 6
+- ✓ Adjustable split ratio — Phase 5
+- ✓ Mouse support for scrolling and clicking — Phase 5
 
 ### Out of Scope
 

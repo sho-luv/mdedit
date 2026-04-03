@@ -12,6 +12,7 @@ pub enum VimMode {
 
 /// Actions the VimHandler returns for the app/editor to execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum VimCommand {
     // Motion commands
     Move(CursorMoveCmd),
@@ -97,6 +98,7 @@ impl CursorMoveCmd {
 
 /// Represents a vim motion target for operators (d, c, y).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum Motion {
     Left,
     Right,
@@ -162,6 +164,7 @@ impl VimHandler {
     }
 
     /// Return a reference to the current mode.
+    #[allow(dead_code)]
     pub fn mode(&self) -> &VimMode {
         &self.mode
     }
@@ -279,7 +282,7 @@ impl VimHandler {
             if partial == 'g' {
                 if key.code == KeyCode::Char('g') {
                     self.pending_operator = None;
-                    let count = self.take_count();
+                    let _count = self.take_count();
                     // gg with no pending operator = move to top
                     return VimCommand::Move(CursorMoveCmd::Top);
                 }
@@ -355,7 +358,7 @@ impl VimHandler {
 
             // g -- start of gg sequence
             KeyCode::Char('g') => {
-                if let Some(op) = &self.pending_operator {
+                if let Some(_op) = &self.pending_operator {
                     // operator pending + g = wait for gg
                     self.partial_key = Some('g');
                     VimCommand::None
@@ -367,7 +370,7 @@ impl VimHandler {
 
             // Operators: d, c, y
             KeyCode::Char('d') => {
-                let count = self.take_count();
+                let _count = self.take_count();
                 if let Some(Operator::Delete) = self.pending_operator {
                     // dd = delete line(s)
                     self.pending_operator = None;
@@ -378,7 +381,7 @@ impl VimHandler {
                 }
             }
             KeyCode::Char('c') => {
-                let count = self.take_count();
+                let _count = self.take_count();
                 if let Some(Operator::Change) = self.pending_operator {
                     // cc = change line(s)
                     self.pending_operator = None;
@@ -389,7 +392,7 @@ impl VimHandler {
                 }
             }
             KeyCode::Char('y') => {
-                let count = self.take_count();
+                let _count = self.take_count();
                 if let Some(Operator::Yank) = self.pending_operator {
                     // yy = yank line(s)
                     self.pending_operator = None;
@@ -501,6 +504,28 @@ impl VimHandler {
                 self.reset_count();
                 self.pending_operator = None;
                 VimCommand::EnterVisual { line_wise: true }
+            }
+
+            // Arrow keys -- navigate like h/j/k/l
+            KeyCode::Left => {
+                let count = self.take_count();
+                self.pending_operator = None;
+                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Back, count) } else { VimCommand::Move(CursorMoveCmd::Back) }
+            }
+            KeyCode::Down => {
+                let count = self.take_count();
+                self.pending_operator = None;
+                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Down, count) } else { VimCommand::Move(CursorMoveCmd::Down) }
+            }
+            KeyCode::Up => {
+                let count = self.take_count();
+                self.pending_operator = None;
+                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Up, count) } else { VimCommand::Move(CursorMoveCmd::Up) }
+            }
+            KeyCode::Right => {
+                let count = self.take_count();
+                self.pending_operator = None;
+                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Forward, count) } else { VimCommand::Move(CursorMoveCmd::Forward) }
             }
 
             // Search

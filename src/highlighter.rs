@@ -36,6 +36,7 @@ impl MarkdownHighlighter {
 
     /// Highlight markdown text, returning styled Lines.
     /// Each input line becomes one output Line with per-token coloring.
+    #[allow(dead_code)]
     pub fn highlight_lines(&self, text: &str) -> Vec<Line<'static>> {
         let syntax = self
             .syntax_set

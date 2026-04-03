@@ -328,6 +328,7 @@ impl<'a> Editor<'a> {
     }
 
     /// Return a reference to the underlying TextArea for rendering.
+    #[allow(dead_code)]
     pub fn widget(&self) -> &TextArea<'a> {
         &self.textarea
     }

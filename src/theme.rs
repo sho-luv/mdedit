@@ -162,6 +162,7 @@ impl Theme {
     }
 
     /// List all available built-in theme names.
+    #[allow(dead_code)]
     pub fn available_themes() -> &'static [&'static str] {
         &["ocean", "dracula", "solarized-light", "gruvbox-dark"]
     }

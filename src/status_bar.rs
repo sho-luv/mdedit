@@ -29,6 +29,7 @@ impl StatusBar {
 
     /// Returns true if a timed message is currently active (not yet expired).
     /// Used by the event loop to know when a redraw is needed for message expiry.
+    #[allow(dead_code)]
     pub fn is_message_active(&self) -> bool {
         if let Some((_, ref when)) = self.timed_message {
             when.elapsed() < self.message_duration
@@ -76,11 +77,13 @@ impl StatusBar {
 
             // Mode-appropriate hints
             let hints = if label.contains("NORMAL") {
-                ":w Save | :q Quit"
+                "i Insert | v Visual | :w Save | :q Quit"
             } else if label.contains("INSERT") {
-                "Esc Normal"
+                "Esc Normal | Type to edit"
             } else if label.contains("VISUAL") {
                 "d Del | y Yank | Esc Normal"
+            } else if label.contains("COMMAND") {
+                "Enter Execute | Esc Cancel"
             } else {
                 ""
             };

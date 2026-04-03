@@ -8,6 +8,7 @@ pub trait ClipboardProvider {
     /// Read text from the system clipboard.
     fn read(&self) -> Result<String, String>;
     /// Human-readable name for this provider.
+    #[allow(dead_code)]
     fn name(&self) -> &str;
 }
 

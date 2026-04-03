@@ -100,6 +100,7 @@ pub struct App<'a> {
     /// Resolved color theme (wired to rendering in Plan 02).
     pub theme: crate::theme::Theme,
     /// Editing mode -- vim or nano (used in Phase 5).
+    #[allow(dead_code)]
     pub editing_mode: crate::config::EditingMode,
     /// Vim key handler state machine (Some when vim mode, None when nano).
     vim_handler: Option<VimHandler>,

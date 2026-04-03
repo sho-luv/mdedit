@@ -20,6 +20,7 @@ impl Preview {
         self.scroll_offset = self.scroll_offset.saturating_add(lines);
     }
 
+    #[allow(dead_code)]
     pub fn reset_scroll(&mut self) {
         self.scroll_offset = 0;
     }

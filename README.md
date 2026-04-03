@@ -6,7 +6,7 @@ A terminal markdown editor with live rendered preview. Edit raw markdown on one 
 
 ### Demo Video
 
-<video src="https://github.com/sho-luv/mdedit/raw/main/demo/mdedit-demo.mp4" width="100%" autoplay loop muted playsinline></video>
+https://github.com/user-attachments/assets/8fdf074f-c237-4759-a589-46ab6648425d
 
 ## Install
 

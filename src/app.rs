@@ -64,6 +64,17 @@ pub enum AppMode {
     PromptFilename,
     /// Incremental search mode (D-05). Captures keystrokes for search query.
     Search,
+    /// Settings overlay panel.
+    Settings,
+}
+
+/// Which row is selected in the settings panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsRow {
+    Theme,
+    Mode,
+    Save,
+    Reset,
 }
 
 /// Top-level application struct owning the editor and managing the event loop.
@@ -120,6 +131,14 @@ pub struct App<'a> {
     clipboard: Box<dyn crate::clipboard::ClipboardProvider>,
     /// Whether we've already shown the "clipboard unavailable" warning.
     clipboard_warned: bool,
+    /// Live config state for :set commands and saving.
+    config: crate::config::Config,
+    /// Selected row in settings panel.
+    settings_row: SettingsRow,
+    /// Index into the theme list for the settings panel.
+    settings_theme_index: usize,
+    /// Index into the mode list for the settings panel.
+    settings_mode_index: usize,
 }
 
 impl<'a> App<'a> {
@@ -129,6 +148,7 @@ impl<'a> App<'a> {
         theme: crate::theme::Theme,
         editing_mode: crate::config::EditingMode,
         clipboard: Box<dyn crate::clipboard::ClipboardProvider>,
+        config: crate::config::Config,
     ) -> Self {
         let is_vim = editing_mode == crate::config::EditingMode::Vim;
         let initial_mode = if is_vim { AppMode::Normal } else { AppMode::Editing };
@@ -162,6 +182,16 @@ impl<'a> App<'a> {
             drag_selecting: false,
             clipboard,
             clipboard_warned: false,
+            settings_theme_index: {
+                let themes = crate::theme::Theme::available_themes();
+                themes.iter().position(|t| *t == config.theme).unwrap_or(0)
+            },
+            settings_mode_index: match config.mode {
+                crate::config::EditingMode::Vim => 0,
+                crate::config::EditingMode::Nano => 1,
+            },
+            config,
+            settings_row: SettingsRow::Theme,
         }
     }
 
@@ -228,6 +258,7 @@ impl<'a> App<'a> {
                             AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
                             AppMode::PromptFilename => self.handle_prompt_filename_key(key),
                             AppMode::Search => self.handle_search_key(key),
+                            AppMode::Settings => self.handle_settings_key(key),
                         }
 
                         // Cursor shape changes per mode
@@ -686,7 +717,10 @@ impl<'a> App<'a> {
             VimCommand::CommandExecute(ref cmd_str) => {
                 let cmd_str = cmd_str.clone();
                 self.execute_ex_command(&cmd_str);
-                self.mode = AppMode::Normal;
+                // Only reset to Normal if the command didn't switch to another mode
+                if self.mode == AppMode::Command {
+                    self.mode = AppMode::Normal;
+                }
             }
             VimCommand::Save => {
                 if self.editor.filepath().is_some() {
@@ -988,8 +1022,83 @@ impl<'a> App<'a> {
                     self.mode = AppMode::PromptFilename;
                 }
             }
+            other if other.starts_with("set ") || other == "set" => {
+                self.execute_set_command(other);
+            }
             other => {
                 self.status_bar.set_message(&format!("Not a command: {}", other));
+            }
+        }
+    }
+
+    /// Handle :set commands for live configuration.
+    ///
+    /// Supported:
+    ///   :set                    -- show current settings
+    ///   :set theme <name>       -- switch theme (ocean, dracula, solarized-light, gruvbox-dark)
+    ///   :set mode <vim|nano>    -- switch editing mode (takes effect on next launch)
+    ///   :set save               -- persist current settings to config file
+    fn execute_set_command(&mut self, cmd: &str) {
+        let args: Vec<&str> = cmd.split_whitespace().collect();
+        match args.as_slice() {
+            // :set -- open settings panel
+            ["set"] => {
+                self.settings_row = SettingsRow::Theme;
+                self.mode = AppMode::Settings;
+            }
+            // :set theme <name>
+            ["set", "theme", name] => {
+                let name = name.to_lowercase();
+                if let Some(new_theme) = crate::theme::Theme::by_name(&name) {
+                    let cap = crate::theme::detect_color_capability();
+                    let applied = if cap == crate::theme::ColorCapability::Color256 {
+                        new_theme.with_256_color_fallback()
+                    } else {
+                        new_theme
+                    };
+                    self.editor.apply_theme(applied.clone());
+                    self.theme = applied;
+                    self.config.theme = name.clone();
+                    self.content_dirty = true;
+                    self.status_bar.set_message(&format!("Theme set to {}", name));
+                } else {
+                    let available = crate::theme::Theme::available_themes().join(", ");
+                    self.status_bar.set_message(
+                        &format!("Unknown theme '{}'. Available: {}", name, available),
+                    );
+                }
+            }
+            // :set mode <vim|nano>
+            ["set", "mode", mode] => {
+                match mode.to_lowercase().as_str() {
+                    "vim" => {
+                        self.config.mode = crate::config::EditingMode::Vim;
+                        self.status_bar.set_message("Mode set to vim (restart to apply)");
+                    }
+                    "nano" => {
+                        self.config.mode = crate::config::EditingMode::Nano;
+                        self.status_bar.set_message("Mode set to nano (restart to apply)");
+                    }
+                    other => {
+                        self.status_bar.set_message(
+                            &format!("Unknown mode '{}'. Available: vim, nano", other),
+                        );
+                    }
+                }
+            }
+            // :set save -- persist to config file
+            ["set", "save"] => {
+                match crate::config::save_config(&self.config) {
+                    Ok(path) => {
+                        self.status_bar.set_message(&format!("Config saved to {}", path));
+                    }
+                    Err(e) => {
+                        self.status_bar.set_message(&format!("Failed to save: {}", e));
+                    }
+                }
+            }
+            _ => {
+                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|save]");
             }
         }
     }
@@ -1363,6 +1472,211 @@ impl<'a> App<'a> {
                     .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
                 frame.render_widget(bar, status_area);
             }
+            AppMode::Settings => {
+                // Status bar hint
+                let bar = Paragraph::new(Span::raw(
+                    " Settings: \u{2191}\u{2193} Navigate | \u{2190}\u{2192} Change | Enter Save & Close | Esc Cancel",
+                ))
+                .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
+                frame.render_widget(bar, status_area);
+            }
+        }
+
+        // Settings overlay (rendered on top of everything)
+        if self.mode == AppMode::Settings {
+            self.render_settings_overlay(frame, body_area);
+        }
+    }
+
+    /// Render the settings overlay panel centered on screen.
+    fn render_settings_overlay(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::{Block, Borders, Clear};
+
+        let themes = crate::theme::Theme::available_themes();
+        let modes = ["vim", "nano"];
+
+        // Center a box
+        let popup_w = 50u16;
+        let popup_h = 11u16;
+        let x = area.x + area.width.saturating_sub(popup_w) / 2;
+        let y = area.y + area.height.saturating_sub(popup_h) / 2;
+        let popup_area = Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
+
+        // Clear background
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.divider_fg))
+            .title(" Settings ")
+            .title_style(Style::default().fg(self.theme.status_bar_fg).add_modifier(ratatui::style::Modifier::BOLD))
+            .style(Style::default().bg(self.theme.status_bar_bg));
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let normal_style = Style::default().fg(self.theme.status_bar_fg).bg(self.theme.status_bar_bg);
+        let selected_style = Style::default().fg(self.theme.search_active_fg).bg(self.theme.search_active_bg).add_modifier(ratatui::style::Modifier::BOLD);
+        let value_style = Style::default().fg(self.theme.search_active_bg).bg(self.theme.status_bar_bg);
+
+        let theme_default = if self.settings_theme_index == 0 { " (default)" } else { "" };
+        let mode_default = if self.settings_mode_index == 0 { " (default)" } else { "" };
+
+        let rows = [
+            (SettingsRow::Theme, "Theme", format!("\u{25C0} {}{} \u{25B6}", themes[self.settings_theme_index], theme_default)),
+            (SettingsRow::Mode, "Mode", format!("\u{25C0} {}{} \u{25B6}", modes[self.settings_mode_index], mode_default)),
+            (SettingsRow::Save, "", "[ Save to config ]".to_string()),
+            (SettingsRow::Reset, "", "[ Reset defaults ]".to_string()),
+        ];
+
+        for (i, (row_id, label, value)) in rows.iter().enumerate() {
+            let y_offset = i as u16 * 2;
+            if y_offset >= inner.height {
+                break;
+            }
+            let row_area = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
+            let is_selected = *row_id == self.settings_row;
+
+            if *row_id == SettingsRow::Save || *row_id == SettingsRow::Reset {
+                // Center the save button
+                let padding = inner.width.saturating_sub(value.len() as u16) / 2;
+                let padded = format!("{:>w$}{}", "", value, w = padding as usize);
+                let style = if is_selected { selected_style } else { normal_style };
+                frame.render_widget(Paragraph::new(Span::styled(padded, style)), row_area);
+            } else {
+                let label_w = 10;
+                let line = ratatui::text::Line::from(vec![
+                    Span::styled(
+                        format!("  {:<w$}", label, w = label_w),
+                        if is_selected { selected_style } else { normal_style },
+                    ),
+                    Span::styled(
+                        value.clone(),
+                        if is_selected { selected_style } else { value_style },
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(line), row_area);
+            }
+        }
+    }
+
+    /// Handle key events in the settings overlay.
+    fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) {
+        let themes = crate::theme::Theme::available_themes();
+        let n_themes = themes.len();
+
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel — restore to what config had before opening
+                self.mode = if self.editing_mode == crate::config::EditingMode::Vim {
+                    AppMode::Normal
+                } else {
+                    AppMode::Editing
+                };
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.settings_row = match self.settings_row {
+                    SettingsRow::Theme => SettingsRow::Reset,
+                    SettingsRow::Mode => SettingsRow::Theme,
+                    SettingsRow::Save => SettingsRow::Mode,
+                    SettingsRow::Reset => SettingsRow::Save,
+                };
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.settings_row = match self.settings_row {
+                    SettingsRow::Theme => SettingsRow::Mode,
+                    SettingsRow::Mode => SettingsRow::Save,
+                    SettingsRow::Save => SettingsRow::Reset,
+                    SettingsRow::Reset => SettingsRow::Theme,
+                };
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                match self.settings_row {
+                    SettingsRow::Theme => {
+                        self.settings_theme_index = if self.settings_theme_index == 0 {
+                            n_themes - 1
+                        } else {
+                            self.settings_theme_index - 1
+                        };
+                        self.apply_settings_theme(themes[self.settings_theme_index]);
+                    }
+                    SettingsRow::Mode => {
+                        self.settings_mode_index = 1 - self.settings_mode_index;
+                    }
+                    SettingsRow::Save | SettingsRow::Reset => {}
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                match self.settings_row {
+                    SettingsRow::Theme => {
+                        self.settings_theme_index = (self.settings_theme_index + 1) % n_themes;
+                        self.apply_settings_theme(themes[self.settings_theme_index]);
+                    }
+                    SettingsRow::Mode => {
+                        self.settings_mode_index = 1 - self.settings_mode_index;
+                    }
+                    SettingsRow::Save | SettingsRow::Reset => {}
+                }
+            }
+            KeyCode::Enter => {
+                match self.settings_row {
+                    SettingsRow::Save => {
+                        // Persist to config file
+                        self.config.mode = if self.settings_mode_index == 0 {
+                            crate::config::EditingMode::Vim
+                        } else {
+                            crate::config::EditingMode::Nano
+                        };
+                        match crate::config::save_config(&self.config) {
+                            Ok(path) => self.status_bar.set_message(&format!("Saved to {}", path)),
+                            Err(e) => self.status_bar.set_message(&format!("Error: {}", e)),
+                        }
+                        self.mode = if self.editing_mode == crate::config::EditingMode::Vim {
+                            AppMode::Normal
+                        } else {
+                            AppMode::Editing
+                        };
+                    }
+                    SettingsRow::Reset => {
+                        // Reset to defaults
+                        self.settings_theme_index = 0; // ocean
+                        self.settings_mode_index = 0;  // vim
+                        self.apply_settings_theme("ocean");
+                        self.config.mode = crate::config::EditingMode::Vim;
+                        self.config.theme = "ocean".to_string();
+                        self.status_bar.set_message("Reset to defaults");
+                    }
+                    _ => {
+                        // Enter on Theme/Mode row — close settings (changes already applied live)
+                        self.config.mode = if self.settings_mode_index == 0 {
+                            crate::config::EditingMode::Vim
+                        } else {
+                            crate::config::EditingMode::Nano
+                        };
+                        self.mode = if self.editing_mode == crate::config::EditingMode::Vim {
+                            AppMode::Normal
+                        } else {
+                            AppMode::Editing
+                        };
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Apply a theme by name from the settings panel (live preview).
+    fn apply_settings_theme(&mut self, name: &str) {
+        if let Some(new_theme) = crate::theme::Theme::by_name(name) {
+            let cap = crate::theme::detect_color_capability();
+            let applied = if cap == crate::theme::ColorCapability::Color256 {
+                new_theme.with_256_color_fallback()
+            } else {
+                new_theme
+            };
+            self.editor.apply_theme(applied.clone());
+            self.theme = applied;
+            self.config.theme = name.to_string();
+            self.content_dirty = true;
         }
     }
 }

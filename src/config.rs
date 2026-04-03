@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::theme::{Theme, ThemeColors};
 
 /// Editing mode for keybindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EditingMode {
     Vim,
@@ -18,7 +18,7 @@ impl Default for EditingMode {
 }
 
 /// Custom theme colors for TOML deserialization, mirrors ThemeColors from theme.rs.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CustomThemeColors {
     pub editor_bg: Option<String>,
@@ -72,11 +72,12 @@ impl CustomThemeColors {
 }
 
 /// Application configuration loaded from ~/.config/mdedit/config.toml.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub theme: String,
     pub mode: EditingMode,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub custom_themes: HashMap<String, CustomThemeColors>,
 }
 
@@ -134,4 +135,25 @@ pub fn resolve_theme(config: &Config) -> Theme {
         config.theme
     );
     Theme::ocean()
+}
+
+/// Save configuration to ~/.config/mdedit/config.toml.
+/// Creates the directory if it doesn't exist.
+/// Returns Ok(path) on success or Err(message) on failure.
+pub fn save_config(config: &Config) -> Result<String, String> {
+    let config_dir = dirs::config_dir()
+        .ok_or_else(|| "Could not determine config directory".to_string())?;
+    let mdedit_dir = config_dir.join("mdedit");
+
+    std::fs::create_dir_all(&mdedit_dir)
+        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+
+    let config_path = mdedit_dir.join("config.toml");
+    let contents = toml::to_string_pretty(config)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+    std::fs::write(&config_path, contents)
+        .map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(config_path.display().to_string())
 }

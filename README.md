@@ -11,11 +11,16 @@ https://github.com/user-attachments/assets/8fdf074f-c237-4759-a589-46ab6648425d
 ## Install
 
 ```bash
-# From source
-git clone https://github.com/sho-luv/mdedit.git
-cd mdedit
-cargo install --path .
+# Quick install (macOS / Linux)
+curl -fsSL https://raw.githubusercontent.com/sho-luv/mdedit/main/install.sh | sh
 ```
+
+```bash
+# From source (requires Rust 1.75+)
+cargo install --git https://github.com/sho-luv/mdedit.git
+```
+
+Pre-built binaries are available on the [Releases](https://github.com/sho-luv/mdedit/releases) page.
 
 ## Usage
 
@@ -92,6 +97,15 @@ mdedit --mode nano       # Use nano-style keybindings
 | Drag divider | Resize panes |
 
 ## Configuration
+
+Settings can be changed live with `:set` in vim mode, which opens an interactive settings panel. Changes can be saved to persist across sessions.
+
+| Command | Action |
+|---------|--------|
+| `:set` | Open settings panel |
+| `:set theme dracula` | Switch theme directly |
+| `:set mode nano` | Switch mode (restart to apply) |
+| `:set save` | Save current settings to config file |
 
 Config file: `~/.config/mdedit/config.toml`
 

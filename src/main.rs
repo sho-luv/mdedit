@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let clipboard = clipboard::detect_provider();
-    let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode, clipboard);
+    let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode, clipboard, cfg);
     let result = app.run(&mut terminal);
 
     // Cleanup: disable mouse, leave alternate screen, disable raw mode

@@ -63,6 +63,13 @@ impl<'a> Editor<'a> {
         }
     }
 
+    /// Apply a new theme at runtime.
+    pub fn apply_theme(&mut self, theme: Theme) {
+        self.textarea.set_line_number_style(Style::default().fg(theme.line_number_fg));
+        self.highlighter = MarkdownHighlighter::new(&theme.syntect_theme);
+        self.theme = theme;
+    }
+
     /// Process a key event using nano-style keybindings (D-05, D-06, D-07).
     /// Returns an optional action for the app layer to handle.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<EditorAction> {

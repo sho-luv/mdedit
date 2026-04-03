@@ -675,7 +675,7 @@ impl VimHandler {
             "q" => VimCommand::Quit { force: false },
             "q!" => VimCommand::Quit { force: true },
             "wq" | "x" => VimCommand::SaveAndQuit,
-            _ => VimCommand::None,
+            _ => VimCommand::CommandExecute(cmd.to_string()),
         }
     }
 }

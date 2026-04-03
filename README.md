@@ -2,11 +2,13 @@
 
 A terminal markdown editor with live rendered preview. Edit raw markdown on one side, see it rendered on the other — no browser, no bloated IDE, no vault lock-in.
 
+![mdedit demo](demo/mdedit-demo.gif)
+
 ## Install
 
 ```bash
 # From source
-git clone https://github.com/your-user/mdedit.git
+git clone https://github.com/sho-luv/mdedit.git
 cd mdedit
 cargo install --path .
 ```

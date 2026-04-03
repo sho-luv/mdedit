@@ -4,6 +4,10 @@ A terminal markdown editor with live rendered preview. Edit raw markdown on one 
 
 ![mdedit demo](demo/mdedit-demo.gif)
 
+### Demo Video
+
+https://github.com/sho-luv/mdedit/raw/main/demo/mdedit-demo.mp4
+
 ## Install
 
 ```bash

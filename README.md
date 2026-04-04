@@ -34,6 +34,11 @@ mdedit --mode nano       # Use nano-style keybindings
 ## Features
 
 - Side-by-side editor + live rendered preview
+- **Render profiles**: GitHub, Obsidian, and CommonMark preview styles
+- **Syntax-highlighted code blocks** in preview (Rust, Python, Bash, JSON, and more)
+- **Table rendering** with Unicode box-drawing borders and column alignment
+- **Callout/alert support** for GitHub (`> [!NOTE]`) and Obsidian (`> [!tip]`) syntax
+- **Sync indicator**: blue highlight line showing your cursor position in the preview
 - Vim-style modal editing (Normal/Insert/Visual/Command)
 - Syntax highlighting in editor pane
 - Configurable color themes (ocean, dracula, solarized-light, gruvbox-dark)
@@ -105,6 +110,7 @@ Settings can be changed live with `:set` in vim mode, which opens an interactive
 | `:set` | Open settings panel |
 | `:set theme dracula` | Switch theme directly |
 | `:set mode nano` | Switch mode (restart to apply) |
+| `:set profile obsidian` | Switch render profile |
 | `:set save` | Save current settings to config file |
 
 Config file: `~/.config/mdedit/config.toml`
@@ -116,22 +122,20 @@ mode = "vim"
 # Color theme
 theme = "ocean"
 
-# Custom theme example
-[themes.my-theme]
-editor_bg = "#1a1b26"
-editor_fg = "#a9b1d6"
-line_number = "#3b4261"
-cursor_line_bg = "#24283b"
-selection_bg = "#364a82"
-status_bar_bg = "#1a1b26"
-status_bar_fg = "#7aa2f7"
-preview_bg = "#1a1b26"
-preview_fg = "#a9b1d6"
-preview_heading = "#7aa2f7"
-preview_code_bg = "#24283b"
-search_match_bg = "#e0af68"
-search_match_fg = "#1a1b26"
+# Render profile: "github" (default), "obsidian", or "commonmark"
+render_profile = "github"
+
+# Sync indicator line in preview (default: true)
+sync_indicator = true
 ```
+
+### Render Profiles
+
+| Profile | Features |
+|---------|----------|
+| `github` | GFM tables, task lists, alerts (`> [!NOTE]`), blue heading accents |
+| `obsidian` | Callouts, wikilinks (`[[page]]`), tags (`#tag`), purple/green headings |
+| `commonmark` | Strict CommonMark, no extensions, classic colored headings |
 
 ### Built-in Themes
 

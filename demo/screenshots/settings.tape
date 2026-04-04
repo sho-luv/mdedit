@@ -26,9 +26,11 @@ Type ""
 Enter
 Type "- Switch themes on the fly"
 Enter
-Type "- Save your preferences"
+Type "- Choose render profiles"
 Enter
-Type "- Reset to defaults"
+Type "- Toggle sync indicator"
+Enter
+Type "- Save your preferences"
 Enter
 Type "EOF"
 Enter
@@ -51,10 +53,38 @@ Right
 Sleep 1s
 Right
 Sleep 1s
-Right
-Sleep 1.5s
 
-# Go back to ocean
+# Navigate to Profile
+Down
+Sleep 500ms
+Down
+Sleep 500ms
+
+# Cycle profiles
+Right
+Sleep 1s
+Right
+Sleep 1s
+
+# Navigate to Sync Line
+Down
+Sleep 500ms
+
+# Toggle sync indicator
+Right
+Sleep 1s
+Left
+Sleep 1s
+
+# Go back to theme
+Up
+Sleep 300ms
+Up
+Sleep 300ms
+Up
+Sleep 300ms
+
+# Back to ocean
 Left
 Sleep 0.5s
 Left

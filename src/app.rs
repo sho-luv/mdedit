@@ -73,6 +73,8 @@ pub enum AppMode {
 enum SettingsRow {
     Theme,
     Mode,
+    Profile,
+    SyncIndicator,
     Save,
     Reset,
 }
@@ -96,6 +98,8 @@ pub struct App<'a> {
     renderer: TuiMarkdownRenderer,
     /// Cached rendered preview text.
     preview_text: ratatui::text::Text<'static>,
+    /// Source line -> preview line mapping for scroll sync.
+    source_to_preview: Vec<usize>,
     /// Flag: content changed since last preview render.
     content_dirty: bool,
     /// Timestamp of last edit (for debounce).
@@ -139,6 +143,8 @@ pub struct App<'a> {
     settings_theme_index: usize,
     /// Index into the mode list for the settings panel.
     settings_mode_index: usize,
+    /// Index into the render profile list for the settings panel.
+    settings_profile_index: usize,
 }
 
 impl<'a> App<'a> {
@@ -165,6 +171,7 @@ impl<'a> App<'a> {
             preview: Preview::new(),
             renderer: TuiMarkdownRenderer,
             preview_text: ratatui::text::Text::default(),
+            source_to_preview: Vec::new(),
             content_dirty: true,            // Render initial content on first frame
             last_edit_time: Some(Instant::now()),
             search_query: String::new(),
@@ -190,31 +197,42 @@ impl<'a> App<'a> {
                 crate::config::EditingMode::Vim => 0,
                 crate::config::EditingMode::Nano => 1,
             },
+            settings_profile_index: crate::config::RenderProfile::all()
+                .iter()
+                .position(|p| *p == config.render_profile)
+                .unwrap_or(0),
             config,
             settings_row: SettingsRow::Theme,
         }
     }
 
-    /// Synchronize preview scroll to editor cursor position using proportional mapping (D-01).
-    /// Only active in Split mode (D-02). Called during render on every frame (D-03).
+    /// Synchronize preview scroll to editor cursor position.
+    /// Uses source-to-preview line mapping when available, falls back to proportional.
+    /// Only active in Split mode. Called during render on every frame.
     fn sync_preview_scroll(&mut self, preview_area_height: u16) {
         if self.layout_mode != LayoutMode::Split {
             return;
         }
         let (cursor_row, _) = self.editor.cursor_position();
-        let total_source = self.editor.line_count();
         let total_preview = self.preview_text.lines.len() as u16;
 
-        if total_source <= 1 {
+        if total_preview == 0 {
             self.preview.set_scroll(0);
             return;
         }
 
-        // Proportional ratio mapping (D-01)
-        let ratio = cursor_row as f64 / (total_source - 1).max(1) as f64;
-        let target_line = (ratio * total_preview as f64) as u16;
-        // Center target in viewport for comfortable reading (D-04)
-        let centered = target_line.saturating_sub(preview_area_height / 2);
+        // Use the source-to-preview line map for precise scroll sync
+        let target_line = if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
+            self.source_to_preview[cursor_row] as u16
+        } else {
+            // Fallback to proportional mapping
+            let total_source = self.editor.line_count();
+            let ratio = cursor_row as f64 / (total_source - 1).max(1) as f64;
+            (ratio * total_preview as f64) as u16
+        };
+
+        // Center target in viewport
+        let centered = target_line.saturating_sub(preview_area_height / 3);
         let max_scroll = total_preview.saturating_sub(preview_area_height);
         self.preview.set_scroll(centered.min(max_scroll));
     }
@@ -225,7 +243,9 @@ impl<'a> App<'a> {
             if let Some(last_edit) = self.last_edit_time {
                 if last_edit.elapsed() >= Duration::from_millis(80) {
                     let content = self.editor.content();
-                    self.preview_text = self.renderer.render(&content);
+                    let result = self.renderer.render(&content, self.config.render_profile);
+                    self.preview_text = result.text;
+                    self.source_to_preview = result.source_to_preview;
                     self.content_dirty = false;
                     self.last_edit_time = None;
                 }
@@ -1086,6 +1106,26 @@ impl<'a> App<'a> {
                     }
                 }
             }
+            // :set profile <name>
+            ["set", "profile", name] => {
+                if let Some(profile) = crate::config::RenderProfile::from_name(name) {
+                    self.config.render_profile = profile;
+                    self.settings_profile_index = crate::config::RenderProfile::all()
+                        .iter()
+                        .position(|p| *p == profile)
+                        .unwrap_or(0);
+                    self.content_dirty = true;
+                    self.status_bar.set_message(&format!("Preview profile set to {}", profile.display_name()));
+                } else {
+                    let available: Vec<&str> = crate::config::RenderProfile::all()
+                        .iter()
+                        .map(|p| p.name())
+                        .collect();
+                    self.status_bar.set_message(
+                        &format!("Unknown profile '{}'. Available: {}", name, available.join(", ")),
+                    );
+                }
+            }
             // :set save -- persist to config file
             ["set", "save"] => {
                 match crate::config::save_config(&self.config) {
@@ -1098,7 +1138,7 @@ impl<'a> App<'a> {
                 }
             }
             _ => {
-                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|save]");
+                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|profile <github|obsidian|commonmark>|save]");
             }
         }
     }
@@ -1374,8 +1414,20 @@ impl<'a> App<'a> {
                 // Scroll sync: preview follows editor cursor (D-03)
                 self.sync_preview_scroll(chunks[2].height);
 
+                // Compute highlight line for sync indicator
+                let highlight = if self.config.sync_indicator {
+                    let (cursor_row, _) = self.editor.cursor_position();
+                    if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
+                        Some(self.source_to_preview[cursor_row] as u16)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 // Preview right
-                self.preview.render(frame, chunks[2], &self.preview_text);
+                self.preview.render(frame, chunks[2], &self.preview_text, highlight);
             }
             LayoutMode::EditorOnly => {
                 self.editor_area = Some(body_area);
@@ -1387,7 +1439,7 @@ impl<'a> App<'a> {
                 self.editor_area = None;
                 self.divider_area = None;
                 self.preview_area = Some(body_area);
-                self.preview.render(frame, body_area, &self.preview_text);
+                self.preview.render(frame, body_area, &self.preview_text, None);
             }
         }
 
@@ -1494,10 +1546,11 @@ impl<'a> App<'a> {
 
         let themes = crate::theme::Theme::available_themes();
         let modes = ["vim", "nano"];
+        let profiles = crate::config::RenderProfile::all();
 
         // Center a box
         let popup_w = 50u16;
-        let popup_h = 11u16;
+        let popup_h = 15u16;
         let x = area.x + area.width.saturating_sub(popup_w) / 2;
         let y = area.y + area.height.saturating_sub(popup_h) / 2;
         let popup_area = Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
@@ -1520,10 +1573,15 @@ impl<'a> App<'a> {
 
         let theme_default = if self.settings_theme_index == 0 { " (default)" } else { "" };
         let mode_default = if self.settings_mode_index == 0 { " (default)" } else { "" };
+        let profile_default = if self.settings_profile_index == 0 { " (default)" } else { "" };
+
+        let sync_label = if self.config.sync_indicator { "On (default)" } else { "Off" };
 
         let rows = [
             (SettingsRow::Theme, "Theme", format!("\u{25C0} {}{} \u{25B6}", themes[self.settings_theme_index], theme_default)),
             (SettingsRow::Mode, "Mode", format!("\u{25C0} {}{} \u{25B6}", modes[self.settings_mode_index], mode_default)),
+            (SettingsRow::Profile, "Preview", format!("\u{25C0} {}{} \u{25B6}", profiles[self.settings_profile_index].display_name(), profile_default)),
+            (SettingsRow::SyncIndicator, "Sync Line", format!("\u{25C0} {} \u{25B6}", sync_label)),
             (SettingsRow::Save, "", "[ Save to config ]".to_string()),
             (SettingsRow::Reset, "", "[ Reset defaults ]".to_string()),
         ];
@@ -1563,6 +1621,8 @@ impl<'a> App<'a> {
     fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) {
         let themes = crate::theme::Theme::available_themes();
         let n_themes = themes.len();
+        let profiles = crate::config::RenderProfile::all();
+        let n_profiles = profiles.len();
 
         match key.code {
             KeyCode::Esc => {
@@ -1577,14 +1637,18 @@ impl<'a> App<'a> {
                 self.settings_row = match self.settings_row {
                     SettingsRow::Theme => SettingsRow::Reset,
                     SettingsRow::Mode => SettingsRow::Theme,
-                    SettingsRow::Save => SettingsRow::Mode,
+                    SettingsRow::Profile => SettingsRow::Mode,
+                    SettingsRow::SyncIndicator => SettingsRow::Profile,
+                    SettingsRow::Save => SettingsRow::SyncIndicator,
                     SettingsRow::Reset => SettingsRow::Save,
                 };
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.settings_row = match self.settings_row {
                     SettingsRow::Theme => SettingsRow::Mode,
-                    SettingsRow::Mode => SettingsRow::Save,
+                    SettingsRow::Mode => SettingsRow::Profile,
+                    SettingsRow::Profile => SettingsRow::SyncIndicator,
+                    SettingsRow::SyncIndicator => SettingsRow::Save,
                     SettingsRow::Save => SettingsRow::Reset,
                     SettingsRow::Reset => SettingsRow::Theme,
                 };
@@ -1602,6 +1666,18 @@ impl<'a> App<'a> {
                     SettingsRow::Mode => {
                         self.settings_mode_index = 1 - self.settings_mode_index;
                     }
+                    SettingsRow::Profile => {
+                        self.settings_profile_index = if self.settings_profile_index == 0 {
+                            n_profiles - 1
+                        } else {
+                            self.settings_profile_index - 1
+                        };
+                        self.config.render_profile = profiles[self.settings_profile_index];
+                        self.content_dirty = true;
+                    }
+                    SettingsRow::SyncIndicator => {
+                        self.config.sync_indicator = !self.config.sync_indicator;
+                    }
                     SettingsRow::Save | SettingsRow::Reset => {}
                 }
             }
@@ -1613,6 +1689,14 @@ impl<'a> App<'a> {
                     }
                     SettingsRow::Mode => {
                         self.settings_mode_index = 1 - self.settings_mode_index;
+                    }
+                    SettingsRow::Profile => {
+                        self.settings_profile_index = (self.settings_profile_index + 1) % n_profiles;
+                        self.config.render_profile = profiles[self.settings_profile_index];
+                        self.content_dirty = true;
+                    }
+                    SettingsRow::SyncIndicator => {
+                        self.config.sync_indicator = !self.config.sync_indicator;
                     }
                     SettingsRow::Save | SettingsRow::Reset => {}
                 }
@@ -1626,6 +1710,7 @@ impl<'a> App<'a> {
                         } else {
                             crate::config::EditingMode::Nano
                         };
+                        self.config.render_profile = profiles[self.settings_profile_index];
                         match crate::config::save_config(&self.config) {
                             Ok(path) => self.status_bar.set_message(&format!("Saved to {}", path)),
                             Err(e) => self.status_bar.set_message(&format!("Error: {}", e)),
@@ -1640,18 +1725,23 @@ impl<'a> App<'a> {
                         // Reset to defaults
                         self.settings_theme_index = 0; // ocean
                         self.settings_mode_index = 0;  // vim
+                        self.settings_profile_index = 0; // github
                         self.apply_settings_theme("ocean");
                         self.config.mode = crate::config::EditingMode::Vim;
                         self.config.theme = "ocean".to_string();
+                        self.config.render_profile = crate::config::RenderProfile::Github;
+                        self.config.sync_indicator = true;
+                        self.content_dirty = true;
                         self.status_bar.set_message("Reset to defaults");
                     }
                     _ => {
-                        // Enter on Theme/Mode row — close settings (changes already applied live)
+                        // Enter on Theme/Mode/Profile row — close settings
                         self.config.mode = if self.settings_mode_index == 0 {
                             crate::config::EditingMode::Vim
                         } else {
                             crate::config::EditingMode::Nano
                         };
+                        self.config.render_profile = profiles[self.settings_profile_index];
                         self.mode = if self.editing_mode == crate::config::EditingMode::Vim {
                             AppMode::Normal
                         } else {

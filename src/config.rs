@@ -17,6 +17,56 @@ impl Default for EditingMode {
     }
 }
 
+/// Markdown render profile — controls how the preview renders markdown
+/// to match the target platform's style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RenderProfile {
+    /// GitHub Flavored Markdown: GFM tables, task lists, alerts, no wikilinks
+    Github,
+    /// Obsidian: callouts, wikilinks, tags, embeds
+    Obsidian,
+    /// Strict CommonMark: no extensions
+    CommonMark,
+}
+
+impl Default for RenderProfile {
+    fn default() -> Self {
+        RenderProfile::Github
+    }
+}
+
+impl RenderProfile {
+    pub fn name(&self) -> &'static str {
+        match self {
+            RenderProfile::Github => "github",
+            RenderProfile::Obsidian => "obsidian",
+            RenderProfile::CommonMark => "commonmark",
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            RenderProfile::Github => "GitHub",
+            RenderProfile::Obsidian => "Obsidian",
+            RenderProfile::CommonMark => "CommonMark",
+        }
+    }
+
+    pub fn all() -> &'static [RenderProfile] {
+        &[RenderProfile::Github, RenderProfile::Obsidian, RenderProfile::CommonMark]
+    }
+
+    pub fn from_name(name: &str) -> Option<RenderProfile> {
+        match name.to_lowercase().as_str() {
+            "github" | "gfm" => Some(RenderProfile::Github),
+            "obsidian" => Some(RenderProfile::Obsidian),
+            "commonmark" | "common" => Some(RenderProfile::CommonMark),
+            _ => None,
+        }
+    }
+}
+
 /// Custom theme colors for TOML deserialization, mirrors ThemeColors from theme.rs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -77,15 +127,23 @@ impl CustomThemeColors {
 pub struct Config {
     pub theme: String,
     pub mode: EditingMode,
+    #[serde(default)]
+    pub render_profile: RenderProfile,
+    #[serde(default = "default_true")]
+    pub sync_indicator: bool,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub custom_themes: HashMap<String, CustomThemeColors>,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             theme: "ocean".to_string(),
             mode: EditingMode::Vim,
+            render_profile: RenderProfile::default(),
+            sync_indicator: true,
             custom_themes: HashMap::new(),
         }
     }

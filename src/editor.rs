@@ -29,6 +29,8 @@ pub struct Editor<'a> {
     scroll_top: usize,
     /// Color theme for editor rendering.
     theme: Theme,
+    /// Whether to visually wrap long lines.
+    pub word_wrap: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -60,6 +62,7 @@ impl<'a> Editor<'a> {
             highlighter,
             scroll_top: 0,
             theme,
+            word_wrap: false,
         }
     }
 
@@ -310,9 +313,30 @@ impl<'a> Editor<'a> {
         &mut self.textarea
     }
 
-    /// Return the current scroll offset (top visible line).
+    /// Return the current scroll offset (top visible line, or top visual line if word_wrap).
     pub fn scroll_top(&self) -> usize {
         self.scroll_top
+    }
+
+    /// Translate a visual click position (relative row in viewport, text column)
+    /// into a logical (line, col) accounting for word wrap and scroll.
+    /// When word_wrap is off, this is a simple scroll_top + row calculation.
+    /// When word_wrap is on, it accounts for wrapped visual lines.
+    pub fn visual_click_to_logical(&self, rel_row: usize, text_col: usize, content_width: usize) -> (usize, usize) {
+        let total_lines = self.textarea.lines().len();
+        if !self.word_wrap || content_width == 0 {
+            // No wrap: scroll_top is a logical line number
+            let logical_row = (self.scroll_top + rel_row).min(total_lines.saturating_sub(1));
+            let line_len = self.textarea.lines().get(logical_row).map(|l| l.len()).unwrap_or(0);
+            (logical_row, text_col.min(line_len))
+        } else {
+            // Word wrap: scroll_top is a visual line number
+            let visual_line = self.scroll_top + rel_row;
+            let (logical_row, sub_line) = self.logical_line_at_visual(visual_line, content_width, total_lines);
+            let logical_col = sub_line * content_width + text_col;
+            let line_len = self.textarea.lines().get(logical_row).map(|l| l.len()).unwrap_or(0);
+            (logical_row, logical_col.min(line_len))
+        }
     }
 
     /// Whether the buffer has been modified since last save.
@@ -554,8 +578,24 @@ impl<'a> Editor<'a> {
             return;
         }
 
+        let lnum_width = highlighter::line_number_width(total_lines);
+        let content_width = (area.width as usize).saturating_sub(lnum_width);
+
         // Update scroll offset to keep cursor visible.
         let (cursor_row, cursor_col) = self.textarea.cursor();
+
+        if self.word_wrap && content_width > 0 {
+            self.render_highlighted_wrapped(frame, area, search_query, cursor_row, cursor_col, total_lines, height, lnum_width, content_width);
+        } else {
+            self.render_highlighted_nowrap(frame, area, search_query, cursor_row, cursor_col, total_lines, height, lnum_width);
+        }
+    }
+
+    /// Render without word wrap (original behavior).
+    fn render_highlighted_nowrap(
+        &mut self, frame: &mut Frame, area: Rect, search_query: &str,
+        cursor_row: usize, cursor_col: usize, total_lines: usize, height: usize, lnum_width: usize,
+    ) {
         self.update_scroll(cursor_row, height);
         let scroll_top = self.scroll_top;
 
@@ -600,7 +640,6 @@ impl<'a> Editor<'a> {
                         .map(|m| (m.start(), m.end()))
                         .collect();
                     for (start, end) in matches {
-                        // Determine if this is the active match (bright cyan) or other match (yellow)
                         let is_active = row == cursor_row && start == active_match_byte;
                         let highlight_style = if is_active {
                             Style::default().bg(self.theme.search_active_bg).fg(self.theme.search_active_fg)
@@ -621,14 +660,12 @@ impl<'a> Editor<'a> {
             final_spans.extend(content_spans);
 
             let mut line = Line::from(final_spans);
-            // Subtle underline on cursor line for visibility
             if row == cursor_row {
                 line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
             }
             display_lines.push(line);
         }
 
-        // Pad remaining area with empty lines (for short files)
         while display_lines.len() < height {
             display_lines.push(Line::from(""));
         }
@@ -636,13 +673,188 @@ impl<'a> Editor<'a> {
         let paragraph = Paragraph::new(display_lines);
         frame.render_widget(paragraph, area);
 
-        // Place the cursor at the correct position
-        let lnum_width = highlighter::line_number_width(total_lines);
         let cursor_x = area.x + lnum_width as u16 + cursor_col as u16;
         let cursor_y = area.y + (cursor_row - scroll_top) as u16;
         if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
+    }
+
+    /// Render with word wrap enabled.
+    fn render_highlighted_wrapped(
+        &mut self, frame: &mut Frame, area: Rect, search_query: &str,
+        cursor_row: usize, cursor_col: usize, total_lines: usize, height: usize,
+        lnum_width: usize, content_width: usize,
+    ) {
+        // Calculate which visual line the cursor is on, accounting for wrapping.
+        // We need to figure out scroll_top in logical lines such that the cursor's
+        // visual line is visible.
+        let wrap_width = content_width.max(1);
+
+        // Calculate visual lines per logical line for lines up to and including cursor
+        let cursor_visual_line = self.visual_line_offset(cursor_row, cursor_col, wrap_width);
+        let cursor_visual_start = self.visual_line_start(cursor_row, wrap_width);
+        let cursor_visual_abs = cursor_visual_start + cursor_visual_line;
+
+        // Update scroll for wrapped mode: scroll_top is in visual lines
+        if cursor_visual_abs < self.scroll_top {
+            self.scroll_top = cursor_visual_abs;
+        } else if cursor_visual_abs >= self.scroll_top + height {
+            self.scroll_top = cursor_visual_abs + 1 - height;
+        }
+        let visual_scroll_top = self.scroll_top;
+
+        // Now figure out which logical lines are visible given our visual scroll position
+        let (first_logical, skip_visual) = self.logical_line_at_visual(visual_scroll_top, wrap_width, total_lines);
+
+        // We need to highlight enough logical lines to fill the viewport
+        let highlight_end = std::cmp::min(first_logical + height + 1, total_lines);
+        let full_text = self.textarea.lines().join("\n");
+        let highlighted = self.highlighter.highlight_range(&full_text, first_logical, highlight_end);
+
+        let search_re = if !search_query.is_empty() {
+            regex::Regex::new(&format!("(?i){}", regex::escape(search_query))).ok()
+        } else {
+            None
+        };
+
+        let active_match_byte = if search_re.is_some() {
+            let line = &self.textarea.lines()[cursor_row];
+            line.char_indices().nth(cursor_col).map(|(i, _)| i).unwrap_or(line.len())
+        } else {
+            0
+        };
+
+        let selection_style = Style::default().bg(self.theme.selection_bg);
+
+        let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(height);
+        let mut cursor_screen_y: Option<u16> = None;
+        let mut cursor_screen_x: Option<u16> = None;
+
+        for (i, hl_line) in highlighted.into_iter().enumerate() {
+            if display_lines.len() >= height {
+                break;
+            }
+            let row = first_logical + i;
+
+            let mut content_spans = hl_line.spans;
+
+            // Search highlights
+            if let Some(ref re) = search_re {
+                if row < self.textarea.lines().len() {
+                    let line_text = &self.textarea.lines()[row];
+                    let matches: Vec<(usize, usize)> = re.find_iter(line_text)
+                        .map(|m| (m.start(), m.end()))
+                        .collect();
+                    for (start, end) in matches {
+                        let is_active = row == cursor_row && start == active_match_byte;
+                        let highlight_style = if is_active {
+                            Style::default().bg(self.theme.search_active_bg).fg(self.theme.search_active_fg)
+                        } else {
+                            Style::default().bg(self.theme.search_match_bg).fg(self.theme.search_match_fg)
+                        };
+                        content_spans = apply_highlight_overlay(content_spans, start, end, highlight_style);
+                    }
+                }
+            }
+
+            // Selection highlight
+            if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
+                content_spans = apply_highlight_overlay(content_spans, sel_start, sel_end, selection_style);
+            }
+
+            // Split spans into wrapped visual lines
+            let wrapped = wrap_spans(content_spans, wrap_width);
+            let is_cursor_line = row == cursor_row;
+
+            for (vi, visual_line_spans) in wrapped.iter().enumerate() {
+                // Skip visual lines before the scroll position (for partial first line)
+                if i == 0 && vi < skip_visual {
+                    continue;
+                }
+                if display_lines.len() >= height {
+                    break;
+                }
+
+                // Line number: show on first visual line of a logical line, blank on continuations
+                let lnum = if vi == 0 {
+                    highlighter::line_number_span(row, total_lines, self.theme.line_number_fg)
+                } else {
+                    Span::styled(
+                        " ".repeat(lnum_width),
+                        Style::default().fg(self.theme.line_number_fg),
+                    )
+                };
+
+                let mut final_spans = vec![lnum];
+                final_spans.extend(visual_line_spans.clone());
+
+                let mut line = Line::from(final_spans);
+                if is_cursor_line {
+                    line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
+                }
+
+                // Track cursor position
+                if is_cursor_line && vi == cursor_visual_line {
+                    let col_in_visual = cursor_col % wrap_width;
+                    cursor_screen_x = Some(area.x + lnum_width as u16 + col_in_visual as u16);
+                    cursor_screen_y = Some(area.y + display_lines.len() as u16);
+                }
+
+                display_lines.push(line);
+            }
+        }
+
+        while display_lines.len() < height {
+            display_lines.push(Line::from(""));
+        }
+
+        let paragraph = Paragraph::new(display_lines);
+        frame.render_widget(paragraph, area);
+
+        if let (Some(cx), Some(cy)) = (cursor_screen_x, cursor_screen_y) {
+            if cx < area.x + area.width && cy < area.y + area.height {
+                frame.set_cursor_position((cx, cy));
+            }
+        }
+    }
+
+    /// Calculate how many visual lines a logical line takes when wrapped.
+    fn visual_lines_for_row(&self, row: usize, wrap_width: usize) -> usize {
+        let line_len = self.textarea.lines().get(row).map(|l| l.len()).unwrap_or(0);
+        if line_len == 0 {
+            1
+        } else {
+            (line_len + wrap_width - 1) / wrap_width
+        }
+    }
+
+    /// Calculate which visual sub-line the cursor is on within its logical line.
+    fn visual_line_offset(&self, _cursor_row: usize, cursor_col: usize, wrap_width: usize) -> usize {
+        cursor_col / wrap_width
+    }
+
+    /// Calculate the absolute visual line number where a logical line starts.
+    fn visual_line_start(&self, row: usize, wrap_width: usize) -> usize {
+        let mut visual = 0;
+        for r in 0..row {
+            visual += self.visual_lines_for_row(r, wrap_width);
+        }
+        visual
+    }
+
+    /// Given an absolute visual line number, find which logical line it belongs to
+    /// and how many visual lines into that logical line to skip.
+    fn logical_line_at_visual(&self, visual_line: usize, wrap_width: usize, total_lines: usize) -> (usize, usize) {
+        let mut visual = 0;
+        for row in 0..total_lines {
+            let vlines = self.visual_lines_for_row(row, wrap_width);
+            if visual + vlines > visual_line {
+                return (row, visual_line - visual);
+            }
+            visual += vlines;
+        }
+        (total_lines.saturating_sub(1), 0)
     }
 
     /// Update scroll_top to keep the cursor within the visible viewport.
@@ -725,4 +937,60 @@ pub fn apply_highlight_overlay(
     }
 
     result
+}
+
+/// Split a list of spans into multiple visual lines at `wrap_width` character boundaries.
+/// Returns a vec of visual lines, each being a vec of spans.
+fn wrap_spans(spans: Vec<Span<'static>>, wrap_width: usize) -> Vec<Vec<Span<'static>>> {
+    if spans.is_empty() {
+        return vec![vec![]];
+    }
+
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let mut col = 0;
+
+    for span in spans {
+        let style = span.style;
+        let content = span.content.to_string();
+        let mut remaining = content.as_str();
+
+        while !remaining.is_empty() {
+            let avail = wrap_width.saturating_sub(col);
+            if avail == 0 {
+                // Start a new visual line
+                lines.push(vec![]);
+                col = 0;
+                continue;
+            }
+
+            let take = remaining.len().min(avail);
+            // Ensure we don't split in the middle of a multi-byte char
+            let take = if take < remaining.len() {
+                let mut end = take;
+                while end > 0 && !remaining.is_char_boundary(end) {
+                    end -= 1;
+                }
+                if end == 0 {
+                    // Single char wider than available — take at least one char
+                    remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+                } else {
+                    end
+                }
+            } else {
+                take
+            };
+
+            let chunk = &remaining[..take];
+            lines.last_mut().unwrap().push(Span::styled(chunk.to_string(), style));
+            col += chunk.len();
+            remaining = &remaining[take..];
+
+            if col >= wrap_width && !remaining.is_empty() {
+                lines.push(vec![]);
+                col = 0;
+            }
+        }
+    }
+
+    lines
 }

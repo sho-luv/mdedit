@@ -131,6 +131,8 @@ pub struct Config {
     pub render_profile: RenderProfile,
     #[serde(default = "default_true")]
     pub sync_indicator: bool,
+    #[serde(default)]
+    pub word_wrap: bool,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub custom_themes: HashMap<String, CustomThemeColors>,
 }
@@ -144,6 +146,7 @@ impl Default for Config {
             mode: EditingMode::Vim,
             render_profile: RenderProfile::default(),
             sync_indicator: true,
+            word_wrap: false,
             custom_themes: HashMap::new(),
         }
     }

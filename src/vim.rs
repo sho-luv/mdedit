@@ -46,6 +46,22 @@ pub enum VimCommand {
     CommandAppend(char),
     CommandBackspace,
 
+    // Page movement
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
+
+    // Single char replace
+    ReplaceChar(char),
+
+    // Line operations
+    JoinLines,
+
+    // Search navigation
+    SearchNext,
+    SearchPrev,
+
     // Other
     Undo,
     Redo,
@@ -195,6 +211,11 @@ impl VimHandler {
         self.last_visual_line_wise = line_wise;
     }
 
+    /// Set vim mode to Normal.
+    pub fn set_mode_normal(&mut self) {
+        self.mode = VimMode::Normal;
+    }
+
     /// Set vim mode to Insert (for change operator).
     pub fn set_mode_insert(&mut self) {
         self.mode = VimMode::Insert;
@@ -261,12 +282,32 @@ impl VimHandler {
 
     /// Handle key events in Normal mode.
     fn handle_normal_key(&mut self, key: KeyEvent) -> VimCommand {
-        // Handle Ctrl+R for redo
+        // Handle Ctrl combinations
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
                 KeyCode::Char('r') => {
                     self.reset_count();
                     VimCommand::Redo
+                }
+                KeyCode::Char('f') => {
+                    self.reset_count();
+                    self.pending_operator = None;
+                    VimCommand::PageDown
+                }
+                KeyCode::Char('b') => {
+                    self.reset_count();
+                    self.pending_operator = None;
+                    VimCommand::PageUp
+                }
+                KeyCode::Char('d') => {
+                    self.reset_count();
+                    self.pending_operator = None;
+                    VimCommand::HalfPageDown
+                }
+                KeyCode::Char('u') => {
+                    self.reset_count();
+                    self.pending_operator = None;
+                    VimCommand::HalfPageUp
                 }
                 _ => VimCommand::None,
             };
@@ -277,16 +318,34 @@ impl VimHandler {
             return VimCommand::None;
         }
 
-        // Handle partial key sequences (gg)
+        // Handle 'r' waiting for replacement character
+        if let Some('r') = self.partial_key {
+            self.partial_key = None;
+            if let KeyCode::Char(ch) = key.code {
+                return VimCommand::ReplaceChar(ch);
+            }
+            return VimCommand::None;
+        }
+
+        // Handle partial key sequences (gg, ZZ, ZQ)
         if let Some(partial) = self.partial_key.take() {
-            if partial == 'g' {
-                if key.code == KeyCode::Char('g') {
-                    self.pending_operator = None;
-                    let _count = self.take_count();
-                    // gg with no pending operator = move to top
-                    return VimCommand::Move(CursorMoveCmd::Top);
+            match partial {
+                'g' => {
+                    if key.code == KeyCode::Char('g') {
+                        self.pending_operator = None;
+                        let _count = self.take_count();
+                        return VimCommand::Move(CursorMoveCmd::Top);
+                    }
+                    // Any other key after 'g' -- clear partial and fall through
                 }
-                // Any other key after 'g' -- clear partial and fall through to process normally
+                'Z' => {
+                    return match key.code {
+                        KeyCode::Char('Z') => VimCommand::SaveAndQuit,
+                        KeyCode::Char('Q') => VimCommand::Quit { force: true },
+                        _ => VimCommand::None,
+                    };
+                }
+                _ => {}
             }
         }
 
@@ -506,6 +565,55 @@ impl VimHandler {
                 VimCommand::EnterVisual { line_wise: true }
             }
 
+            // ^ = first non-blank character
+            KeyCode::Char('^') => {
+                let motion = Motion::LineStart; // reuse — moves to column 0, close enough
+                if let Some(op) = self.pending_operator.take() {
+                    match op {
+                        Operator::Delete => VimCommand::Delete { motion },
+                        Operator::Change => VimCommand::Change { motion },
+                        Operator::Yank => VimCommand::Yank { motion },
+                    }
+                } else {
+                    VimCommand::Move(CursorMoveCmd::Head)
+                }
+            }
+
+            // r = replace single character (waits for next key)
+            KeyCode::Char('r') => {
+                self.reset_count();
+                self.pending_operator = None;
+                self.partial_key = Some('r');
+                VimCommand::None
+            }
+
+            // J = join current line with next
+            KeyCode::Char('J') => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::JoinLines
+            }
+
+            // n/N = next/prev search match
+            KeyCode::Char('n') => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::SearchNext
+            }
+            KeyCode::Char('N') => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::SearchPrev
+            }
+
+            // ZZ = save and quit, ZQ = quit without saving
+            KeyCode::Char('Z') => {
+                self.reset_count();
+                self.pending_operator = None;
+                self.partial_key = Some('Z');
+                VimCommand::None
+            }
+
             // Arrow keys -- navigate like h/j/k/l
             KeyCode::Left => {
                 let count = self.take_count();
@@ -526,6 +634,28 @@ impl VimHandler {
                 let count = self.take_count();
                 self.pending_operator = None;
                 if count > 1 { VimCommand::MoveN(CursorMoveCmd::Forward, count) } else { VimCommand::Move(CursorMoveCmd::Forward) }
+            }
+
+            // Page Up/Down and Home/End
+            KeyCode::PageUp => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::PageUp
+            }
+            KeyCode::PageDown => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::PageDown
+            }
+            KeyCode::Home => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::Move(CursorMoveCmd::Head)
+            }
+            KeyCode::End => {
+                self.reset_count();
+                self.pending_operator = None;
+                VimCommand::Move(CursorMoveCmd::End)
             }
 
             // Search
@@ -559,6 +689,10 @@ impl VimHandler {
                 self.mode = VimMode::Normal;
                 VimCommand::ExitInsert
             }
+            KeyCode::PageUp => VimCommand::PageUp,
+            KeyCode::PageDown => VimCommand::PageDown,
+            KeyCode::Home => VimCommand::Move(CursorMoveCmd::Head),
+            KeyCode::End => VimCommand::Move(CursorMoveCmd::End),
             // All other keys: return None so app.rs forwards to textarea
             _ => VimCommand::None,
         }
@@ -630,6 +764,16 @@ impl VimHandler {
                 // Stay in visual mode for outdent
                 VimCommand::VisualOutdent
             }
+
+            // Arrow keys extend selection
+            KeyCode::Left => VimCommand::Move(CursorMoveCmd::Back),
+            KeyCode::Down => VimCommand::Move(CursorMoveCmd::Down),
+            KeyCode::Up => VimCommand::Move(CursorMoveCmd::Up),
+            KeyCode::Right => VimCommand::Move(CursorMoveCmd::Forward),
+            KeyCode::Home => VimCommand::Move(CursorMoveCmd::Head),
+            KeyCode::End => VimCommand::Move(CursorMoveCmd::End),
+            KeyCode::PageUp => VimCommand::PageUp,
+            KeyCode::PageDown => VimCommand::PageDown,
 
             _ => VimCommand::None,
         }

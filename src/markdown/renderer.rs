@@ -270,7 +270,7 @@ fn render_markdown(markdown: &str, profile: RenderProfile) -> RenderResult {
                     } else {
                         // No syntax found — fallback to plain green
                         for code_line in &code_block_lines {
-                            let right = block_width - h_pad - code_line.len();
+                            let right = (block_width).saturating_sub(h_pad).saturating_sub(code_line.len());
                             let full = format!("{}{}{}", " ".repeat(h_pad), code_line, " ".repeat(right));
                             lines.push(Line::from(Span::styled(full, fallback_style)));
                         }

@@ -75,6 +75,7 @@ enum SettingsRow {
     Mode,
     Profile,
     SyncIndicator,
+    WordWrap,
     Save,
     Reset,
 }
@@ -160,8 +161,11 @@ impl<'a> App<'a> {
         let initial_mode = if is_vim { AppMode::Normal } else { AppMode::Editing };
         let vim_handler = if is_vim { Some(VimHandler::new()) } else { None };
 
+        let mut editor = Editor::new(content, filepath, theme.clone());
+        editor.word_wrap = config.word_wrap;
+
         App {
-            editor: Editor::new(content, filepath, theme.clone()),
+            editor,
             mode: initial_mode,
             should_quit: false,
             filename_input: String::new(),
@@ -570,6 +574,32 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Jump to the next search match (for n in normal mode).
+    fn find_next_match(&mut self) {
+        if self.search_match_count > 0 {
+            self.editor.textarea_mut().search_forward(false);
+            self.search_match_index = (self.search_match_index + 1) % self.search_match_count;
+            self.status_bar.set_message(&format!(
+                "/{} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count
+            ));
+        }
+    }
+
+    /// Jump to the previous search match (for N in normal mode).
+    fn find_prev_match(&mut self) {
+        if self.search_match_count > 0 {
+            self.editor.textarea_mut().search_back(false);
+            self.search_match_index = if self.search_match_index == 0 {
+                self.search_match_count - 1
+            } else {
+                self.search_match_index - 1
+            };
+            self.status_bar.set_message(&format!(
+                "?{} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count
+            ));
+        }
+    }
+
     /// Return the current search query if in search mode, empty string otherwise.
     pub fn current_search_query(&self) -> &str {
         if self.mode == AppMode::Search && !self.search_query.is_empty() {
@@ -745,6 +775,7 @@ impl<'a> App<'a> {
             VimCommand::Save => {
                 if self.editor.filepath().is_some() {
                     self.do_save();
+                    self.mode = AppMode::Normal;
                 } else {
                     self.filename_input = String::new();
                     self.quit_after_save = false;
@@ -904,6 +935,69 @@ impl<'a> App<'a> {
                     self.mark_content_changed();
                 }
             }
+            VimCommand::PageDown => {
+                let page_size = self.editor_area.map(|a| a.height as usize).unwrap_or(20);
+                for _ in 0..page_size {
+                    self.editor.textarea_mut().move_cursor(CursorMove::Down);
+                }
+            }
+            VimCommand::PageUp => {
+                let page_size = self.editor_area.map(|a| a.height as usize).unwrap_or(20);
+                for _ in 0..page_size {
+                    self.editor.textarea_mut().move_cursor(CursorMove::Up);
+                }
+            }
+            VimCommand::HalfPageDown => {
+                let half = self.editor_area.map(|a| a.height as usize / 2).unwrap_or(10);
+                for _ in 0..half {
+                    self.editor.textarea_mut().move_cursor(CursorMove::Down);
+                }
+            }
+            VimCommand::HalfPageUp => {
+                let half = self.editor_area.map(|a| a.height as usize / 2).unwrap_or(10);
+                for _ in 0..half {
+                    self.editor.textarea_mut().move_cursor(CursorMove::Up);
+                }
+            }
+            VimCommand::ReplaceChar(ch) => {
+                self.editor.textarea_mut().delete_next_char();
+                self.editor.textarea_mut().insert_char(ch);
+                self.editor.textarea_mut().move_cursor(CursorMove::Back);
+                self.mark_content_changed();
+            }
+            VimCommand::JoinLines => {
+                let (row, _) = self.editor.textarea_mut().cursor();
+                let total = self.editor.textarea_mut().lines().len();
+                if row + 1 < total {
+                    // Move to end of current line, delete newline, insert space
+                    self.editor.textarea_mut().move_cursor(CursorMove::End);
+                    self.editor.textarea_mut().delete_next_char(); // delete the newline
+                    // Remove leading whitespace from the joined line
+                    loop {
+                        let col = self.editor.textarea_mut().cursor().1;
+                        let ch = self.editor.textarea_mut().lines().get(row)
+                            .and_then(|l| l.chars().nth(col));
+                        match ch {
+                            Some(' ') | Some('\t') => {
+                                self.editor.textarea_mut().delete_next_char();
+                            }
+                            _ => break,
+                        }
+                    }
+                    self.editor.textarea_mut().insert_char(' ');
+                    self.mark_content_changed();
+                }
+            }
+            VimCommand::SearchNext => {
+                if !self.search_query.is_empty() {
+                    self.find_next_match();
+                }
+            }
+            VimCommand::SearchPrev => {
+                if !self.search_query.is_empty() {
+                    self.find_prev_match();
+                }
+            }
             VimCommand::None | VimCommand::CommandAppend(_) | VimCommand::CommandBackspace => {}
         }
     }
@@ -1046,7 +1140,15 @@ impl<'a> App<'a> {
                 self.execute_set_command(other);
             }
             other => {
-                self.status_bar.set_message(&format!("Not a command: {}", other));
+                // Try parsing as a line number (e.g. :42)
+                if let Ok(line_num) = other.trim().parse::<usize>() {
+                    let target = if line_num == 0 { 0 } else { line_num - 1 };
+                    let max_line = self.editor.textarea_mut().lines().len().saturating_sub(1);
+                    let target = target.min(max_line);
+                    self.editor.textarea_mut().move_cursor(ratatui_textarea::CursorMove::Jump(target as u16, 0));
+                } else {
+                    self.status_bar.set_message(&format!("Not a command: {}", other));
+                }
             }
         }
     }
@@ -1126,6 +1228,13 @@ impl<'a> App<'a> {
                     );
                 }
             }
+            // :set wrap -- toggle word wrap
+            ["set", "wrap"] => {
+                self.config.word_wrap = !self.config.word_wrap;
+                self.editor.word_wrap = self.config.word_wrap;
+                let state = if self.config.word_wrap { "on" } else { "off" };
+                self.status_bar.set_message(&format!("Word wrap {}", state));
+            }
             // :set save -- persist to config file
             ["set", "save"] => {
                 match crate::config::save_config(&self.config) {
@@ -1138,7 +1247,7 @@ impl<'a> App<'a> {
                 }
             }
             _ => {
-                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|profile <github|obsidian|commonmark>|save]");
+                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|profile <..>|wrap|save]");
             }
         }
     }
@@ -1269,25 +1378,34 @@ impl<'a> App<'a> {
                 }
 
                 // Text drag selection in editor (D-21)
+                // Stay in current mode — don't enter Visual. Just track selection
+                // internally and copy to clipboard on mouse-up.
                 if let Some(editor) = self.editor_area {
-                    if col >= editor.x && col < editor.x + editor.width && row >= editor.y && row < editor.y + editor.height {
-                        if !self.drag_selecting {
-                            // Start selection on first drag event
-                            self.editor.textarea_mut().start_selection();
-                            self.drag_selecting = true;
-                            // In vim mode, enter Visual mode (D-21)
-                            if let Some(ref mut handler) = self.vim_handler {
-                                handler.set_mode_visual(false); // char-wise
-                                self.mode = AppMode::Visual;
-                            }
-                        }
-                        // Move cursor to drag position (extends selection)
-                        self.click_to_editor_cursor(col, row, &editor);
+                    // Clamp to editor area to prevent runaway scrolling
+                    let clamped_col = col.clamp(editor.x, editor.x + editor.width - 1);
+                    let clamped_row = row.clamp(editor.y, editor.y + editor.height - 1);
+                    if !self.drag_selecting {
+                        self.editor.textarea_mut().start_selection();
+                        self.drag_selecting = true;
                     }
+                    self.click_to_editor_cursor(clamped_col, clamped_row, &editor);
                 }
             }
 
             MouseEventKind::Up(MouseButton::Left) => {
+                if self.drag_selecting {
+                    // Copy selection to clipboard
+                    let text = self.editor.get_selection_text();
+                    if !text.is_empty() {
+                        if self.vim_handler.is_some() {
+                            self.yank_to_clipboard(&text);
+                        } else {
+                            let _ = self.clipboard.write(&text);
+                        }
+                        self.status_bar.set_message("Copied to clipboard");
+                    }
+                    self.editor.textarea_mut().cancel_selection();
+                }
                 self.dragging_divider = false;
                 self.drag_selecting = false;
             }
@@ -1349,17 +1467,9 @@ impl<'a> App<'a> {
             0
         };
 
-        // Calculate actual line (add scroll offset)
-        let scroll_top = self.editor.scroll_top();
-        let target_row = scroll_top + relative_row;
-
-        // Clamp to valid range
-        let max_row = total_lines.saturating_sub(1);
-        let clamped_row = target_row.min(max_row);
-
-        // Clamp column to line length
-        let line_len = self.editor.textarea_mut().lines().get(clamped_row).map(|l| l.len()).unwrap_or(0);
-        let clamped_col = text_col.min(line_len);
+        // Convert visual click to logical position (handles word wrap)
+        let content_width = (editor_area.width as usize).saturating_sub(lnum_width);
+        let (clamped_row, clamped_col) = self.editor.visual_click_to_logical(relative_row, text_col, content_width);
 
         // Cancel any existing selection if not drag-selecting
         if !self.drag_selecting {
@@ -1550,7 +1660,7 @@ impl<'a> App<'a> {
 
         // Center a box
         let popup_w = 50u16;
-        let popup_h = 15u16;
+        let popup_h = 17u16;
         let x = area.x + area.width.saturating_sub(popup_w) / 2;
         let y = area.y + area.height.saturating_sub(popup_h) / 2;
         let popup_area = Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
@@ -1576,12 +1686,14 @@ impl<'a> App<'a> {
         let profile_default = if self.settings_profile_index == 0 { " (default)" } else { "" };
 
         let sync_label = if self.config.sync_indicator { "On (default)" } else { "Off" };
+        let wrap_label = if self.config.word_wrap { "On" } else { "Off (default)" };
 
         let rows = [
             (SettingsRow::Theme, "Theme", format!("\u{25C0} {}{} \u{25B6}", themes[self.settings_theme_index], theme_default)),
             (SettingsRow::Mode, "Mode", format!("\u{25C0} {}{} \u{25B6}", modes[self.settings_mode_index], mode_default)),
             (SettingsRow::Profile, "Preview", format!("\u{25C0} {}{} \u{25B6}", profiles[self.settings_profile_index].display_name(), profile_default)),
             (SettingsRow::SyncIndicator, "Sync Line", format!("\u{25C0} {} \u{25B6}", sync_label)),
+            (SettingsRow::WordWrap, "Word Wrap", format!("\u{25C0} {} \u{25B6}", wrap_label)),
             (SettingsRow::Save, "", "[ Save to config ]".to_string()),
             (SettingsRow::Reset, "", "[ Reset defaults ]".to_string()),
         ];
@@ -1639,7 +1751,8 @@ impl<'a> App<'a> {
                     SettingsRow::Mode => SettingsRow::Theme,
                     SettingsRow::Profile => SettingsRow::Mode,
                     SettingsRow::SyncIndicator => SettingsRow::Profile,
-                    SettingsRow::Save => SettingsRow::SyncIndicator,
+                    SettingsRow::WordWrap => SettingsRow::SyncIndicator,
+                    SettingsRow::Save => SettingsRow::WordWrap,
                     SettingsRow::Reset => SettingsRow::Save,
                 };
             }
@@ -1648,7 +1761,8 @@ impl<'a> App<'a> {
                     SettingsRow::Theme => SettingsRow::Mode,
                     SettingsRow::Mode => SettingsRow::Profile,
                     SettingsRow::Profile => SettingsRow::SyncIndicator,
-                    SettingsRow::SyncIndicator => SettingsRow::Save,
+                    SettingsRow::SyncIndicator => SettingsRow::WordWrap,
+                    SettingsRow::WordWrap => SettingsRow::Save,
                     SettingsRow::Save => SettingsRow::Reset,
                     SettingsRow::Reset => SettingsRow::Theme,
                 };
@@ -1678,6 +1792,10 @@ impl<'a> App<'a> {
                     SettingsRow::SyncIndicator => {
                         self.config.sync_indicator = !self.config.sync_indicator;
                     }
+                    SettingsRow::WordWrap => {
+                        self.config.word_wrap = !self.config.word_wrap;
+                        self.editor.word_wrap = self.config.word_wrap;
+                    }
                     SettingsRow::Save | SettingsRow::Reset => {}
                 }
             }
@@ -1697,6 +1815,10 @@ impl<'a> App<'a> {
                     }
                     SettingsRow::SyncIndicator => {
                         self.config.sync_indicator = !self.config.sync_indicator;
+                    }
+                    SettingsRow::WordWrap => {
+                        self.config.word_wrap = !self.config.word_wrap;
+                        self.editor.word_wrap = self.config.word_wrap;
                     }
                     SettingsRow::Save | SettingsRow::Reset => {}
                 }
@@ -1731,6 +1853,8 @@ impl<'a> App<'a> {
                         self.config.theme = "ocean".to_string();
                         self.config.render_profile = crate::config::RenderProfile::Github;
                         self.config.sync_indicator = true;
+                        self.config.word_wrap = false;
+                        self.editor.word_wrap = false;
                         self.content_dirty = true;
                         self.status_bar.set_message("Reset to defaults");
                     }

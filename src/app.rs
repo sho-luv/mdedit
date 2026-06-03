@@ -6,16 +6,17 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use regex::Regex;
 use ratatui_textarea::CursorMove;
+use regex::Regex;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::editor::{Editor, EditorAction};
 use crate::file_io;
 use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
-use crate::preview::Preview;
-use crate::status_bar::StatusBar;
+use crate::preview::{Preview, PreviewMetrics};
+use crate::status_bar::{StatusBar, StatusBarContent};
 use crate::vim::{InsertPosition, Motion, VimCommand, VimHandler};
 
 /// Layout mode — controls how the main area is split (D-11, D-12, D-13).
@@ -158,8 +159,16 @@ impl<'a> App<'a> {
         config: crate::config::Config,
     ) -> Self {
         let is_vim = editing_mode == crate::config::EditingMode::Vim;
-        let initial_mode = if is_vim { AppMode::Normal } else { AppMode::Editing };
-        let vim_handler = if is_vim { Some(VimHandler::new()) } else { None };
+        let initial_mode = if is_vim {
+            AppMode::Normal
+        } else {
+            AppMode::Editing
+        };
+        let vim_handler = if is_vim {
+            Some(VimHandler::new())
+        } else {
+            None
+        };
 
         let mut editor = Editor::new(content, filepath, theme.clone());
         editor.word_wrap = config.word_wrap;
@@ -176,7 +185,7 @@ impl<'a> App<'a> {
             renderer: TuiMarkdownRenderer,
             preview_text: ratatui::text::Text::default(),
             source_to_preview: Vec::new(),
-            content_dirty: true,            // Render initial content on first frame
+            content_dirty: true, // Render initial content on first frame
             last_edit_time: Some(Instant::now()),
             search_query: String::new(),
             search_cursor_before: (0, 0),
@@ -194,7 +203,7 @@ impl<'a> App<'a> {
             clipboard,
             clipboard_warned: false,
             settings_theme_index: {
-                let themes = crate::theme::Theme::available_themes();
+                let themes = crate::config::available_theme_names(&config);
                 themes.iter().position(|t| *t == config.theme).unwrap_or(0)
             },
             settings_mode_index: match config.mode {
@@ -213,12 +222,12 @@ impl<'a> App<'a> {
     /// Synchronize preview scroll to editor cursor position.
     /// Uses source-to-preview line mapping when available, falls back to proportional.
     /// Only active in Split mode. Called during render on every frame.
-    fn sync_preview_scroll(&mut self, preview_area_height: u16) {
+    fn sync_preview_scroll(&mut self, preview_area_height: u16, metrics: &PreviewMetrics) {
         if self.layout_mode != LayoutMode::Split {
             return;
         }
         let (cursor_row, _) = self.editor.cursor_position();
-        let total_preview = self.preview_text.lines.len() as u16;
+        let total_preview = metrics.total_visual_lines();
 
         if total_preview == 0 {
             self.preview.set_scroll(0);
@@ -226,19 +235,23 @@ impl<'a> App<'a> {
         }
 
         // Use the source-to-preview line map for precise scroll sync
-        let target_line = if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
-            self.source_to_preview[cursor_row] as u16
-        } else {
-            // Fallback to proportional mapping
-            let total_source = self.editor.line_count();
-            let ratio = cursor_row as f64 / (total_source - 1).max(1) as f64;
-            (ratio * total_preview as f64) as u16
-        };
+        let target_line =
+            if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
+                metrics.visual_line_for_logical(self.source_to_preview[cursor_row])
+            } else {
+                // Fallback to proportional mapping
+                let total_source = self.editor.line_count();
+                let ratio = cursor_row as f64 / total_source.saturating_sub(1).max(1) as f64;
+                (ratio * total_preview as f64) as u16
+            };
 
-        // Center target in viewport
-        let centered = target_line.saturating_sub(preview_area_height / 3);
+        // Align the matched preview line with the editor cursor's screen row so
+        // the cursor and its rendered counterpart sit on the same row across the
+        // split. The editor renders first each frame, so cursor_screen_row is fresh.
+        let cursor_screen_row = self.editor.cursor_screen_row();
+        let target_offset = target_line.saturating_sub(cursor_screen_row);
         let max_scroll = total_preview.saturating_sub(preview_area_height);
-        self.preview.set_scroll(centered.min(max_scroll));
+        self.preview.set_scroll(target_offset.min(max_scroll));
     }
 
     /// Debounced preview update (D-04). Only re-renders after 80ms idle.
@@ -247,9 +260,28 @@ impl<'a> App<'a> {
             if let Some(last_edit) = self.last_edit_time {
                 if last_edit.elapsed() >= Duration::from_millis(80) {
                     let content = self.editor.content();
-                    let result = self.renderer.render(&content, self.config.render_profile);
-                    self.preview_text = result.text;
-                    self.source_to_preview = result.source_to_preview;
+                    let render_result = catch_unwind(AssertUnwindSafe(|| {
+                        self.renderer
+                            .render(&content, self.config.render_profile, &self.theme)
+                    }));
+
+                    match render_result {
+                        Ok(result) => {
+                            self.preview_text = result.text;
+                            self.source_to_preview = result.source_to_preview;
+                        }
+                        Err(payload) => {
+                            let message = panic_message(payload);
+                            self.preview_text = ratatui::text::Text::from(vec![
+                                ratatui::text::Line::from("Preview render failed"),
+                                ratatui::text::Line::from(message.clone()),
+                            ]);
+                            self.source_to_preview.clear();
+                            self.preview.set_scroll(0);
+                            self.status_bar
+                                .set_message("Preview render failed; editor still available");
+                        }
+                    }
                     self.content_dirty = false;
                     self.last_edit_time = None;
                 }
@@ -258,7 +290,10 @@ impl<'a> App<'a> {
     }
 
     /// Main event loop. Draws the UI and processes events until quit.
-    pub fn run(&mut self, terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+    pub fn run(
+        &mut self,
+        terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
         loop {
             // Update preview before drawing (debounced)
             self.maybe_update_preview();
@@ -270,32 +305,38 @@ impl<'a> App<'a> {
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key) => {
-                    // IMPORTANT: filter for Press only to avoid double-handling
-                    // on Windows and some terminals
-                    if key.kind == KeyEventKind::Press {
-                        match self.mode {
-                            AppMode::Editing => self.handle_editing_key(key),
-                            AppMode::Normal => self.handle_vim_key(key),
-                            AppMode::Insert => self.handle_vim_insert_key(key),
-                            AppMode::Visual => self.handle_vim_visual_key(key),
-                            AppMode::Command => self.handle_vim_command_key(key),
-                            AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
-                            AppMode::PromptFilename => self.handle_prompt_filename_key(key),
-                            AppMode::Search => self.handle_search_key(key),
-                            AppMode::Settings => self.handle_settings_key(key),
-                        }
+                        // IMPORTANT: filter for Press only to avoid double-handling
+                        // on Windows and some terminals
+                        if key.kind == KeyEventKind::Press {
+                            match self.mode {
+                                AppMode::Editing => self.handle_editing_key(key),
+                                AppMode::Normal => self.handle_vim_key(key),
+                                AppMode::Insert => self.handle_vim_insert_key(key),
+                                AppMode::Visual => self.handle_vim_visual_key(key),
+                                AppMode::Command => self.handle_vim_command_key(key),
+                                AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
+                                AppMode::PromptFilename => self.handle_prompt_filename_key(key),
+                                AppMode::Search => self.handle_search_key(key),
+                                AppMode::Settings => self.handle_settings_key(key),
+                            }
 
-                        // Cursor shape changes per mode
-                        match self.mode {
-                            AppMode::Normal | AppMode::Visual | AppMode::Command => {
-                                let _ = crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBlock);
+                            // Cursor shape changes per mode
+                            match self.mode {
+                                AppMode::Normal | AppMode::Visual | AppMode::Command => {
+                                    let _ = crossterm::execute!(
+                                        std::io::stdout(),
+                                        SetCursorStyle::SteadyBlock
+                                    );
+                                }
+                                AppMode::Insert | AppMode::Editing => {
+                                    let _ = crossterm::execute!(
+                                        std::io::stdout(),
+                                        SetCursorStyle::SteadyBar
+                                    );
+                                }
+                                _ => {} // ConfirmQuit, PromptFilename, Search keep current
                             }
-                            AppMode::Insert | AppMode::Editing => {
-                                let _ = crossterm::execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
-                            }
-                            _ => {} // ConfirmQuit, PromptFilename, Search keep current
                         }
-                    }
                     }
                     Event::Mouse(mouse) => {
                         self.handle_mouse_event(mouse);
@@ -327,8 +368,7 @@ impl<'a> App<'a> {
                     true
                 }
                 Err(e) => {
-                    self.status_bar
-                        .set_message(&format!("Save failed: {}", e));
+                    self.status_bar.set_message(&format!("Save failed: {}", e));
                     false
                 }
             }
@@ -385,10 +425,22 @@ impl<'a> App<'a> {
         // In preview-only mode, route keys differently (D-13, D-14)
         if self.layout_mode == LayoutMode::PreviewOnly {
             match key.code {
-                KeyCode::Up => { self.preview.scroll_up(1); return; }
-                KeyCode::Down => { self.preview.scroll_down(1); return; }
-                KeyCode::PageUp => { self.preview.scroll_up(20); return; }
-                KeyCode::PageDown => { self.preview.scroll_down(20); return; }
+                KeyCode::Up => {
+                    self.preview.scroll_up(1);
+                    return;
+                }
+                KeyCode::Down => {
+                    self.preview.scroll_down(1);
+                    return;
+                }
+                KeyCode::PageUp => {
+                    self.preview.scroll_up(20);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.preview.scroll_down(20);
+                    return;
+                }
                 _ => {
                     // Any editing key switches back to split mode (D-14)
                     self.layout_mode = LayoutMode::Split;
@@ -510,7 +562,9 @@ impl<'a> App<'a> {
             KeyCode::Esc => {
                 // Exit search, restore cursor to pre-search position (D-07)
                 let (row, col) = self.search_cursor_before;
-                self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, col as u16));
+                self.editor
+                    .textarea_mut()
+                    .move_cursor(CursorMove::Jump(row as u16, col as u16));
                 // Clear search pattern to prevent ghost highlights (Pitfall 4)
                 let _ = self.editor.textarea_mut().set_search_pattern("");
                 self.search_query.clear();
@@ -529,7 +583,8 @@ impl<'a> App<'a> {
                     } else {
                         // Enter: next match (D-07)
                         self.editor.textarea_mut().search_forward(false);
-                        self.search_match_index = (self.search_match_index + 1) % self.search_match_count;
+                        self.search_match_index =
+                            (self.search_match_index + 1) % self.search_match_count;
                     }
                     // Update cursor_before so Esc now stays at this match (D-07)
                     self.search_cursor_before = self.editor.cursor_position();
@@ -580,7 +635,10 @@ impl<'a> App<'a> {
             self.editor.textarea_mut().search_forward(false);
             self.search_match_index = (self.search_match_index + 1) % self.search_match_count;
             self.status_bar.set_message(&format!(
-                "/{} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count
+                "/{} [{}/{}]",
+                self.search_query,
+                self.search_match_index + 1,
+                self.search_match_count
             ));
         }
     }
@@ -595,7 +653,10 @@ impl<'a> App<'a> {
                 self.search_match_index - 1
             };
             self.status_bar.set_message(&format!(
-                "?{} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count
+                "?{} [{}/{}]",
+                self.search_query,
+                self.search_match_index + 1,
+                self.search_match_count
             ));
         }
     }
@@ -617,7 +678,8 @@ impl<'a> App<'a> {
         }
         if let Err(_e) = self.clipboard.write(text) {
             if !self.clipboard_warned {
-                self.status_bar.set_message("System clipboard unavailable - using internal register");
+                self.status_bar
+                    .set_message("System clipboard unavailable - using internal register");
                 self.clipboard_warned = true;
             }
         }
@@ -652,11 +714,15 @@ impl<'a> App<'a> {
     fn execute_vim_command(&mut self, cmd: VimCommand) {
         match cmd {
             VimCommand::Move(cursor_cmd) => {
-                self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                self.editor
+                    .textarea_mut()
+                    .move_cursor(cursor_cmd.to_cursor_move());
             }
             VimCommand::MoveN(cursor_cmd, n) => {
                 for _ in 0..n {
-                    self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(cursor_cmd.to_cursor_move());
                 }
             }
             VimCommand::Delete { motion } => {
@@ -675,7 +741,9 @@ impl<'a> App<'a> {
             VimCommand::PasteAfter => {
                 let text = match self.clipboard.read() {
                     Ok(clip_text) if !clip_text.is_empty() => clip_text,
-                    _ => self.vim_handler.as_ref()
+                    _ => self
+                        .vim_handler
+                        .as_ref()
                         .map(|h| h.yank_register().to_string())
                         .unwrap_or_default(),
                 };
@@ -696,7 +764,9 @@ impl<'a> App<'a> {
             VimCommand::PasteBefore => {
                 let text = match self.clipboard.read() {
                     Ok(clip_text) if !clip_text.is_empty() => clip_text,
-                    _ => self.vim_handler.as_ref()
+                    _ => self
+                        .vim_handler
+                        .as_ref()
                         .map(|h| h.yank_register().to_string())
                         .unwrap_or_default(),
                 };
@@ -819,7 +889,9 @@ impl<'a> App<'a> {
                 self.mark_content_changed();
             }
             VimCommand::VisualDelete => {
-                let line_wise = self.vim_handler.as_ref()
+                let line_wise = self
+                    .vim_handler
+                    .as_ref()
                     .map(|h| h.was_visual_line_wise())
                     .unwrap_or(false);
                 if line_wise {
@@ -837,7 +909,9 @@ impl<'a> App<'a> {
                         }
                         self.yank_to_clipboard(&yanked);
                         // Delete lines from bottom to top to avoid index shift
-                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                        self.editor
+                            .textarea_mut()
+                            .move_cursor(CursorMove::Jump(sr as u16, 0));
                         for _ in sr..=er {
                             self.editor.delete_current_line();
                         }
@@ -853,7 +927,9 @@ impl<'a> App<'a> {
                 self.mode = AppMode::Normal;
             }
             VimCommand::VisualChange => {
-                let line_wise = self.vim_handler.as_ref()
+                let line_wise = self
+                    .vim_handler
+                    .as_ref()
                     .map(|h| h.was_visual_line_wise())
                     .unwrap_or(false);
                 if line_wise {
@@ -869,7 +945,9 @@ impl<'a> App<'a> {
                         }
                         self.yank_to_clipboard(&yanked);
                         // Delete all selected lines, then leave an empty line for insert
-                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                        self.editor
+                            .textarea_mut()
+                            .move_cursor(CursorMove::Jump(sr as u16, 0));
                         // Delete content of first line, then remaining lines
                         self.editor.delete_current_line_content();
                         for _ in (sr + 1)..=er {
@@ -903,13 +981,19 @@ impl<'a> App<'a> {
                 if let Some(((sr, _), (er, _))) = self.editor.textarea_mut().selection_range() {
                     self.editor.textarea_mut().cancel_selection();
                     for row in sr..=er {
-                        self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, 0));
+                        self.editor
+                            .textarea_mut()
+                            .move_cursor(CursorMove::Jump(row as u16, 0));
                         self.editor.textarea_mut().insert_str("  ");
                     }
                     // Re-select the range for continued visual mode operations
-                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(CursorMove::Jump(sr as u16, 0));
                     self.editor.textarea_mut().start_selection();
-                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(er as u16, 0));
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(CursorMove::Jump(er as u16, 0));
                     self.editor.textarea_mut().move_cursor(CursorMove::End);
                     self.mark_content_changed();
                 }
@@ -921,16 +1005,22 @@ impl<'a> App<'a> {
                         let line = self.editor.textarea_mut().lines()[row].clone();
                         let spaces = line.chars().take(2).take_while(|c| *c == ' ').count();
                         if spaces > 0 {
-                            self.editor.textarea_mut().move_cursor(CursorMove::Jump(row as u16, 0));
+                            self.editor
+                                .textarea_mut()
+                                .move_cursor(CursorMove::Jump(row as u16, 0));
                             for _ in 0..spaces {
                                 self.editor.textarea_mut().delete_next_char();
                             }
                         }
                     }
                     // Re-select the range for continued visual mode operations
-                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(sr as u16, 0));
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(CursorMove::Jump(sr as u16, 0));
                     self.editor.textarea_mut().start_selection();
-                    self.editor.textarea_mut().move_cursor(CursorMove::Jump(er as u16, 0));
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(CursorMove::Jump(er as u16, 0));
                     self.editor.textarea_mut().move_cursor(CursorMove::End);
                     self.mark_content_changed();
                 }
@@ -948,13 +1038,19 @@ impl<'a> App<'a> {
                 }
             }
             VimCommand::HalfPageDown => {
-                let half = self.editor_area.map(|a| a.height as usize / 2).unwrap_or(10);
+                let half = self
+                    .editor_area
+                    .map(|a| a.height as usize / 2)
+                    .unwrap_or(10);
                 for _ in 0..half {
                     self.editor.textarea_mut().move_cursor(CursorMove::Down);
                 }
             }
             VimCommand::HalfPageUp => {
-                let half = self.editor_area.map(|a| a.height as usize / 2).unwrap_or(10);
+                let half = self
+                    .editor_area
+                    .map(|a| a.height as usize / 2)
+                    .unwrap_or(10);
                 for _ in 0..half {
                     self.editor.textarea_mut().move_cursor(CursorMove::Up);
                 }
@@ -972,10 +1068,14 @@ impl<'a> App<'a> {
                     // Move to end of current line, delete newline, insert space
                     self.editor.textarea_mut().move_cursor(CursorMove::End);
                     self.editor.textarea_mut().delete_next_char(); // delete the newline
-                    // Remove leading whitespace from the joined line
+                                                                   // Remove leading whitespace from the joined line
                     loop {
                         let col = self.editor.textarea_mut().cursor().1;
-                        let ch = self.editor.textarea_mut().lines().get(row)
+                        let ch = self
+                            .editor
+                            .textarea_mut()
+                            .lines()
+                            .get(row)
                             .and_then(|l| l.chars().nth(col));
                         match ch {
                             Some(' ') | Some('\t') => {
@@ -1117,7 +1217,8 @@ impl<'a> App<'a> {
             }
             "q" => {
                 if self.editor.is_modified() {
-                    self.status_bar.set_message("No write since last change (add ! to override)");
+                    self.status_bar
+                        .set_message("No write since last change (add ! to override)");
                 } else {
                     self.should_quit = true;
                 }
@@ -1145,9 +1246,12 @@ impl<'a> App<'a> {
                     let target = if line_num == 0 { 0 } else { line_num - 1 };
                     let max_line = self.editor.textarea_mut().lines().len().saturating_sub(1);
                     let target = target.min(max_line);
-                    self.editor.textarea_mut().move_cursor(ratatui_textarea::CursorMove::Jump(target as u16, 0));
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(ratatui_textarea::CursorMove::Jump(target as u16, 0));
                 } else {
-                    self.status_bar.set_message(&format!("Not a command: {}", other));
+                    self.status_bar
+                        .set_message(&format!("Not a command: {}", other));
                 }
             }
         }
@@ -1171,7 +1275,7 @@ impl<'a> App<'a> {
             // :set theme <name>
             ["set", "theme", name] => {
                 let name = name.to_lowercase();
-                if let Some(new_theme) = crate::theme::Theme::by_name(&name) {
+                if let Some(new_theme) = crate::config::resolve_theme_name(&self.config, &name) {
                     let cap = crate::theme::detect_color_capability();
                     let applied = if cap == crate::theme::ColorCapability::Color256 {
                         new_theme.with_256_color_fallback()
@@ -1182,32 +1286,33 @@ impl<'a> App<'a> {
                     self.theme = applied;
                     self.config.theme = name.clone();
                     self.content_dirty = true;
-                    self.status_bar.set_message(&format!("Theme set to {}", name));
+                    self.status_bar
+                        .set_message(&format!("Theme set to {}", name));
                 } else {
-                    let available = crate::theme::Theme::available_themes().join(", ");
-                    self.status_bar.set_message(
-                        &format!("Unknown theme '{}'. Available: {}", name, available),
-                    );
+                    let available = crate::config::available_theme_names(&self.config).join(", ");
+                    self.status_bar.set_message(&format!(
+                        "Unknown theme '{}'. Available: {}",
+                        name, available
+                    ));
                 }
             }
             // :set mode <vim|nano>
-            ["set", "mode", mode] => {
-                match mode.to_lowercase().as_str() {
-                    "vim" => {
-                        self.config.mode = crate::config::EditingMode::Vim;
-                        self.status_bar.set_message("Mode set to vim (restart to apply)");
-                    }
-                    "nano" => {
-                        self.config.mode = crate::config::EditingMode::Nano;
-                        self.status_bar.set_message("Mode set to nano (restart to apply)");
-                    }
-                    other => {
-                        self.status_bar.set_message(
-                            &format!("Unknown mode '{}'. Available: vim, nano", other),
-                        );
-                    }
+            ["set", "mode", mode] => match mode.to_lowercase().as_str() {
+                "vim" => {
+                    self.config.mode = crate::config::EditingMode::Vim;
+                    self.status_bar
+                        .set_message("Mode set to vim (restart to apply)");
                 }
-            }
+                "nano" => {
+                    self.config.mode = crate::config::EditingMode::Nano;
+                    self.status_bar
+                        .set_message("Mode set to nano (restart to apply)");
+                }
+                other => {
+                    self.status_bar
+                        .set_message(&format!("Unknown mode '{}'. Available: vim, nano", other));
+                }
+            },
             // :set profile <name>
             ["set", "profile", name] => {
                 if let Some(profile) = crate::config::RenderProfile::from_name(name) {
@@ -1217,15 +1322,20 @@ impl<'a> App<'a> {
                         .position(|p| *p == profile)
                         .unwrap_or(0);
                     self.content_dirty = true;
-                    self.status_bar.set_message(&format!("Preview profile set to {}", profile.display_name()));
+                    self.status_bar.set_message(&format!(
+                        "Preview profile set to {}",
+                        profile.display_name()
+                    ));
                 } else {
                     let available: Vec<&str> = crate::config::RenderProfile::all()
                         .iter()
                         .map(|p| p.name())
                         .collect();
-                    self.status_bar.set_message(
-                        &format!("Unknown profile '{}'. Available: {}", name, available.join(", ")),
-                    );
+                    self.status_bar.set_message(&format!(
+                        "Unknown profile '{}'. Available: {}",
+                        name,
+                        available.join(", ")
+                    ));
                 }
             }
             // :set wrap -- toggle word wrap
@@ -1236,18 +1346,20 @@ impl<'a> App<'a> {
                 self.status_bar.set_message(&format!("Word wrap {}", state));
             }
             // :set save -- persist to config file
-            ["set", "save"] => {
-                match crate::config::save_config(&self.config) {
-                    Ok(path) => {
-                        self.status_bar.set_message(&format!("Config saved to {}", path));
-                    }
-                    Err(e) => {
-                        self.status_bar.set_message(&format!("Failed to save: {}", e));
-                    }
+            ["set", "save"] => match crate::config::save_config(&self.config) {
+                Ok(path) => {
+                    self.status_bar
+                        .set_message(&format!("Config saved to {}", path));
                 }
-            }
+                Err(e) => {
+                    self.status_bar
+                        .set_message(&format!("Failed to save: {}", e));
+                }
+            },
             _ => {
-                self.status_bar.set_message("Usage: :set [theme <name>|mode <vim|nano>|profile <..>|wrap|save]");
+                self.status_bar.set_message(
+                    "Usage: :set [theme <name>|mode <vim|nano>|profile <..>|wrap|save]",
+                );
             }
         }
     }
@@ -1261,7 +1373,9 @@ impl<'a> App<'a> {
             return;
         }
 
-        let cmd = self.vim_handler.as_mut()
+        let cmd = self
+            .vim_handler
+            .as_mut()
             .map(|h| h.handle_key(key))
             .unwrap_or(VimCommand::None);
         self.execute_vim_command(cmd);
@@ -1269,7 +1383,9 @@ impl<'a> App<'a> {
 
     /// Handle key events in Vim Insert mode.
     fn handle_vim_insert_key(&mut self, key: crossterm::event::KeyEvent) {
-        let cmd = self.vim_handler.as_mut()
+        let cmd = self
+            .vim_handler
+            .as_mut()
             .map(|h| h.handle_key(key))
             .unwrap_or(VimCommand::None);
 
@@ -1299,18 +1415,24 @@ impl<'a> App<'a> {
             return;
         }
 
-        let cmd = self.vim_handler.as_mut()
+        let cmd = self
+            .vim_handler
+            .as_mut()
             .map(|h| h.handle_key(key))
             .unwrap_or(VimCommand::None);
 
         match cmd {
             // Motions extend selection (selection is active, just move cursor)
             VimCommand::Move(cursor_cmd) => {
-                self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                self.editor
+                    .textarea_mut()
+                    .move_cursor(cursor_cmd.to_cursor_move());
             }
             VimCommand::MoveN(cursor_cmd, n) => {
                 for _ in 0..n {
-                    self.editor.textarea_mut().move_cursor(cursor_cmd.to_cursor_move());
+                    self.editor
+                        .textarea_mut()
+                        .move_cursor(cursor_cmd.to_cursor_move());
                 }
             }
             // All other commands (ExitVisual, VisualDelete, etc.) go through execute
@@ -1323,7 +1445,9 @@ impl<'a> App<'a> {
 
     /// Handle key events in Vim Command mode.
     fn handle_vim_command_key(&mut self, key: crossterm::event::KeyEvent) {
-        let cmd = self.vim_handler.as_mut()
+        let cmd = self
+            .vim_handler
+            .as_mut()
             .map(|h| h.handle_key(key))
             .unwrap_or(VimCommand::None);
         self.execute_vim_command(cmd);
@@ -1331,7 +1455,7 @@ impl<'a> App<'a> {
 
     /// Handle mouse events: click, scroll, drag-select, divider drag (D-19 through D-23).
     fn handle_mouse_event(&mut self, mouse: crossterm::event::MouseEvent) {
-        use crossterm::event::{MouseEventKind, MouseButton};
+        use crossterm::event::{MouseButton, MouseEventKind};
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1340,7 +1464,11 @@ impl<'a> App<'a> {
 
                 // Check if click is on divider (D-22)
                 if let Some(div) = self.divider_area {
-                    if col >= div.x && col < div.x + div.width && row >= div.y && row < div.y + div.height {
+                    if col >= div.x
+                        && col < div.x + div.width
+                        && row >= div.y
+                        && row < div.y + div.height
+                    {
                         self.dragging_divider = true;
                         return;
                     }
@@ -1348,9 +1476,12 @@ impl<'a> App<'a> {
 
                 // Check if click is in editor area (D-19)
                 if let Some(editor) = self.editor_area {
-                    if col >= editor.x && col < editor.x + editor.width && row >= editor.y && row < editor.y + editor.height {
+                    if col >= editor.x
+                        && col < editor.x + editor.width
+                        && row >= editor.y
+                        && row < editor.y + editor.height
+                    {
                         self.click_to_editor_cursor(col, row, &editor);
-                        return;
                     }
                 }
 
@@ -1365,11 +1496,13 @@ impl<'a> App<'a> {
                 if self.dragging_divider {
                     if let Some(editor) = self.editor_area {
                         // Calculate new split ratio from mouse x position
-                        let total_width = editor.width + 1 + self.preview_area.map(|p| p.width).unwrap_or(0);
+                        let total_width =
+                            editor.width + 1 + self.preview_area.map(|p| p.width).unwrap_or(0);
                         if total_width > 0 {
                             let editor_x_start = editor.x;
                             let relative_x = col.saturating_sub(editor_x_start);
-                            let new_ratio = ((relative_x as f32 / total_width as f32) * 100.0) as u16;
+                            let new_ratio =
+                                ((relative_x as f32 / total_width as f32) * 100.0) as u16;
                             // Clamp to reasonable bounds (min 20%, max 80%)
                             self.split_ratio = new_ratio.clamp(20, 80);
                         }
@@ -1381,9 +1514,14 @@ impl<'a> App<'a> {
                 // Stay in current mode — don't enter Visual. Just track selection
                 // internally and copy to clipboard on mouse-up.
                 if let Some(editor) = self.editor_area {
+                    if editor.width == 0 || editor.height == 0 {
+                        return;
+                    }
                     // Clamp to editor area to prevent runaway scrolling
-                    let clamped_col = col.clamp(editor.x, editor.x + editor.width - 1);
-                    let clamped_row = row.clamp(editor.y, editor.y + editor.height - 1);
+                    let clamped_col =
+                        col.clamp(editor.x, editor.x + editor.width.saturating_sub(1));
+                    let clamped_row =
+                        row.clamp(editor.y, editor.y + editor.height.saturating_sub(1));
                     if !self.drag_selecting {
                         self.editor.textarea_mut().start_selection();
                         self.drag_selecting = true;
@@ -1452,6 +1590,10 @@ impl<'a> App<'a> {
 
     /// Translate a screen click position to an editor cursor position (D-19).
     fn click_to_editor_cursor(&mut self, screen_col: u16, screen_row: u16, editor_area: &Rect) {
+        if editor_area.width == 0 || editor_area.height == 0 {
+            return;
+        }
+
         // Calculate editor-relative position
         let relative_row = (screen_row - editor_area.y) as usize;
         let relative_col = (screen_col - editor_area.x) as usize;
@@ -1461,22 +1603,22 @@ impl<'a> App<'a> {
         let lnum_width = crate::highlighter::line_number_width(total_lines);
 
         // Calculate actual text column (subtract line number width)
-        let text_col = if relative_col > lnum_width {
-            relative_col - lnum_width
-        } else {
-            0
-        };
+        let text_col = relative_col.saturating_sub(lnum_width);
 
         // Convert visual click to logical position (handles word wrap)
         let content_width = (editor_area.width as usize).saturating_sub(lnum_width);
-        let (clamped_row, clamped_col) = self.editor.visual_click_to_logical(relative_row, text_col, content_width);
+        let (clamped_row, clamped_col) =
+            self.editor
+                .visual_click_to_logical(relative_row, text_col, content_width);
 
         // Cancel any existing selection if not drag-selecting
         if !self.drag_selecting {
             self.editor.textarea_mut().cancel_selection();
         }
 
-        self.editor.textarea_mut().move_cursor(CursorMove::Jump(clamped_row as u16, clamped_col as u16));
+        self.editor
+            .textarea_mut()
+            .move_cursor(CursorMove::Jump(clamped_row as u16, clamped_col as u16));
     }
 
     /// Render the editor, preview, and status bar based on current layout mode.
@@ -1508,7 +1650,8 @@ impl<'a> App<'a> {
                 self.preview_area = Some(chunks[2]);
 
                 // Editor left — with syntax highlighting (D-09)
-                self.editor.render_highlighted(frame, chunks[0], &search_query);
+                self.editor
+                    .render_highlighted(frame, chunks[0], &search_query);
 
                 // Divider (D-11: subtle dimmed vertical line)
                 let divider_lines: Vec<ratatui::text::Line> = (0..chunks[1].height)
@@ -1521,14 +1664,21 @@ impl<'a> App<'a> {
                     .collect();
                 frame.render_widget(Paragraph::new(divider_lines), chunks[1]);
 
+                let preview_metrics = PreviewMetrics::for_text(&self.preview_text, chunks[2].width);
+
                 // Scroll sync: preview follows editor cursor (D-03)
-                self.sync_preview_scroll(chunks[2].height);
+                self.sync_preview_scroll(chunks[2].height, &preview_metrics);
 
                 // Compute highlight line for sync indicator
                 let highlight = if self.config.sync_indicator {
                     let (cursor_row, _) = self.editor.cursor_position();
-                    if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
-                        Some(self.source_to_preview[cursor_row] as u16)
+                    if !self.source_to_preview.is_empty()
+                        && cursor_row < self.source_to_preview.len()
+                    {
+                        Some(
+                            preview_metrics
+                                .visual_line_for_logical(self.source_to_preview[cursor_row]),
+                        )
                     } else {
                         None
                     }
@@ -1537,19 +1687,35 @@ impl<'a> App<'a> {
                 };
 
                 // Preview right
-                self.preview.render(frame, chunks[2], &self.preview_text, highlight);
+                self.preview.render(
+                    frame,
+                    chunks[2],
+                    &self.preview_text,
+                    &self.theme,
+                    &preview_metrics,
+                    highlight,
+                );
             }
             LayoutMode::EditorOnly => {
                 self.editor_area = Some(body_area);
                 self.divider_area = None;
                 self.preview_area = None;
-                self.editor.render_highlighted(frame, body_area, &search_query);
+                self.editor
+                    .render_highlighted(frame, body_area, &search_query);
             }
             LayoutMode::PreviewOnly => {
                 self.editor_area = None;
                 self.divider_area = None;
                 self.preview_area = Some(body_area);
-                self.preview.render(frame, body_area, &self.preview_text, None);
+                let preview_metrics = PreviewMetrics::for_text(&self.preview_text, body_area.width);
+                self.preview.render(
+                    frame,
+                    body_area,
+                    &self.preview_text,
+                    &self.theme,
+                    &preview_metrics,
+                    None,
+                );
             }
         }
 
@@ -1559,11 +1725,13 @@ impl<'a> App<'a> {
                 self.status_bar.render(
                     frame,
                     status_area,
-                    self.editor.display_name(),
-                    self.editor.cursor_position(),
-                    self.editor.is_modified(),
                     &self.theme,
-                    None,
+                    StatusBarContent {
+                        filename: self.editor.display_name(),
+                        cursor: self.editor.cursor_position(),
+                        modified: self.editor.is_modified(),
+                        vim_mode: None,
+                    },
                 );
             }
             AppMode::Normal => {
@@ -1571,11 +1739,13 @@ impl<'a> App<'a> {
                 self.status_bar.render(
                     frame,
                     status_area,
-                    self.editor.display_name(),
-                    self.editor.cursor_position(),
-                    self.editor.is_modified(),
                     &self.theme,
-                    mode_info,
+                    StatusBarContent {
+                        filename: self.editor.display_name(),
+                        cursor: self.editor.cursor_position(),
+                        modified: self.editor.is_modified(),
+                        vim_mode: mode_info,
+                    },
                 );
             }
             AppMode::Insert => {
@@ -1583,11 +1753,13 @@ impl<'a> App<'a> {
                 self.status_bar.render(
                     frame,
                     status_area,
-                    self.editor.display_name(),
-                    self.editor.cursor_position(),
-                    self.editor.is_modified(),
                     &self.theme,
-                    mode_info,
+                    StatusBarContent {
+                        filename: self.editor.display_name(),
+                        cursor: self.editor.cursor_position(),
+                        modified: self.editor.is_modified(),
+                        vim_mode: mode_info,
+                    },
                 );
             }
             AppMode::Visual => {
@@ -1595,43 +1767,64 @@ impl<'a> App<'a> {
                 self.status_bar.render(
                     frame,
                     status_area,
-                    self.editor.display_name(),
-                    self.editor.cursor_position(),
-                    self.editor.is_modified(),
                     &self.theme,
-                    mode_info,
+                    StatusBarContent {
+                        filename: self.editor.display_name(),
+                        cursor: self.editor.cursor_position(),
+                        modified: self.editor.is_modified(),
+                        vim_mode: mode_info,
+                    },
                 );
             }
             AppMode::Command => {
-                let cmd = self.vim_handler.as_ref().map(|h| h.command_buffer()).unwrap_or("");
+                let cmd = self
+                    .vim_handler
+                    .as_ref()
+                    .map(|h| h.command_buffer())
+                    .unwrap_or("");
                 let prompt = format!(" :{}_", cmd);
-                let bar = Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(self.theme.mode_command_bg).fg(self.theme.status_bar_fg));
+                let bar = Paragraph::new(Span::raw(prompt)).style(
+                    Style::default()
+                        .bg(self.theme.mode_command_bg)
+                        .fg(self.theme.status_bar_fg),
+                );
                 frame.render_widget(bar, status_area);
             }
             AppMode::ConfirmQuit => {
-                let bar = Paragraph::new(Span::raw(
-                    " Unsaved changes. Save? (y/n/Esc)",
-                ))
-                .style(Style::default().bg(self.theme.confirm_bg).fg(self.theme.confirm_fg));
+                let bar = Paragraph::new(Span::raw(" Unsaved changes. Save? (y/n/Esc)")).style(
+                    Style::default()
+                        .bg(self.theme.confirm_bg)
+                        .fg(self.theme.confirm_fg),
+                );
                 frame.render_widget(bar, status_area);
             }
             AppMode::PromptFilename => {
                 let prompt = format!(" Save as: {}_", self.filename_input);
-                let bar = Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
+                let bar = Paragraph::new(Span::raw(prompt)).style(
+                    Style::default()
+                        .bg(self.theme.prompt_bg)
+                        .fg(self.theme.prompt_fg),
+                );
                 frame.render_widget(bar, status_area);
             }
             AppMode::Search => {
                 let prompt = if self.search_match_count > 0 {
-                    format!(" Search: {} [{}/{}]", self.search_query, self.search_match_index + 1, self.search_match_count)
+                    format!(
+                        " Search: {} [{}/{}]",
+                        self.search_query,
+                        self.search_match_index + 1,
+                        self.search_match_count
+                    )
                 } else if self.search_query.is_empty() {
                     " Search: _".to_string()
                 } else {
                     format!(" Search: {} [no matches]", self.search_query)
                 };
-                let bar = Paragraph::new(Span::raw(prompt))
-                    .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
+                let bar = Paragraph::new(Span::raw(prompt)).style(
+                    Style::default()
+                        .bg(self.theme.prompt_bg)
+                        .fg(self.theme.prompt_fg),
+                );
                 frame.render_widget(bar, status_area);
             }
             AppMode::Settings => {
@@ -1654,7 +1847,7 @@ impl<'a> App<'a> {
     fn render_settings_overlay(&self, frame: &mut Frame, area: Rect) {
         use ratatui::widgets::{Block, Borders, Clear};
 
-        let themes = crate::theme::Theme::available_themes();
+        let themes = self.theme_names();
         let modes = ["vim", "nano"];
         let profiles = crate::config::RenderProfile::all();
 
@@ -1672,28 +1865,89 @@ impl<'a> App<'a> {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.divider_fg))
             .title(" Settings ")
-            .title_style(Style::default().fg(self.theme.status_bar_fg).add_modifier(ratatui::style::Modifier::BOLD))
+            .title_style(
+                Style::default()
+                    .fg(self.theme.status_bar_fg)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )
             .style(Style::default().bg(self.theme.status_bar_bg));
         let inner = block.inner(popup_area);
         frame.render_widget(block, popup_area);
 
-        let normal_style = Style::default().fg(self.theme.status_bar_fg).bg(self.theme.status_bar_bg);
-        let selected_style = Style::default().fg(self.theme.search_active_fg).bg(self.theme.search_active_bg).add_modifier(ratatui::style::Modifier::BOLD);
-        let value_style = Style::default().fg(self.theme.search_active_bg).bg(self.theme.status_bar_bg);
+        let normal_style = Style::default()
+            .fg(self.theme.status_bar_fg)
+            .bg(self.theme.status_bar_bg);
+        let selected_style = Style::default()
+            .fg(self.theme.search_active_fg)
+            .bg(self.theme.search_active_bg)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let value_style = Style::default()
+            .fg(self.theme.search_active_bg)
+            .bg(self.theme.status_bar_bg);
 
-        let theme_default = if self.settings_theme_index == 0 { " (default)" } else { "" };
-        let mode_default = if self.settings_mode_index == 0 { " (default)" } else { "" };
-        let profile_default = if self.settings_profile_index == 0 { " (default)" } else { "" };
+        let theme_default = if themes[self.settings_theme_index] == "ocean" {
+            " (default)"
+        } else {
+            ""
+        };
+        let mode_default = if self.settings_mode_index == 0 {
+            " (default)"
+        } else {
+            ""
+        };
+        let profile_default = if self.settings_profile_index == 0 {
+            " (default)"
+        } else {
+            ""
+        };
 
-        let sync_label = if self.config.sync_indicator { "On (default)" } else { "Off" };
-        let wrap_label = if self.config.word_wrap { "On" } else { "Off (default)" };
+        let sync_label = if self.config.sync_indicator {
+            "On (default)"
+        } else {
+            "Off"
+        };
+        let wrap_label = if self.config.word_wrap {
+            "On"
+        } else {
+            "Off (default)"
+        };
 
         let rows = [
-            (SettingsRow::Theme, "Theme", format!("\u{25C0} {}{} \u{25B6}", themes[self.settings_theme_index], theme_default)),
-            (SettingsRow::Mode, "Mode", format!("\u{25C0} {}{} \u{25B6}", modes[self.settings_mode_index], mode_default)),
-            (SettingsRow::Profile, "Preview", format!("\u{25C0} {}{} \u{25B6}", profiles[self.settings_profile_index].display_name(), profile_default)),
-            (SettingsRow::SyncIndicator, "Sync Line", format!("\u{25C0} {} \u{25B6}", sync_label)),
-            (SettingsRow::WordWrap, "Word Wrap", format!("\u{25C0} {} \u{25B6}", wrap_label)),
+            (
+                SettingsRow::Theme,
+                "Theme",
+                format!(
+                    "\u{25C0} {}{} \u{25B6}",
+                    themes[self.settings_theme_index], theme_default
+                ),
+            ),
+            (
+                SettingsRow::Mode,
+                "Mode",
+                format!(
+                    "\u{25C0} {}{} \u{25B6}",
+                    modes[self.settings_mode_index], mode_default
+                ),
+            ),
+            (
+                SettingsRow::Profile,
+                "Preview",
+                format!(
+                    "\u{25C0} {}{} \u{25B6}",
+                    profiles[self.settings_profile_index].display_name(),
+                    profile_default
+                ),
+            ),
+            (
+                SettingsRow::SyncIndicator,
+                "Sync Line",
+                format!("\u{25C0} {} \u{25B6}", sync_label),
+            ),
+            (
+                SettingsRow::WordWrap,
+                "Word Wrap",
+                format!("\u{25C0} {} \u{25B6}", wrap_label),
+            ),
             (SettingsRow::Save, "", "[ Save to config ]".to_string()),
             (SettingsRow::Reset, "", "[ Reset defaults ]".to_string()),
         ];
@@ -1710,18 +1964,30 @@ impl<'a> App<'a> {
                 // Center the save button
                 let padding = inner.width.saturating_sub(value.len() as u16) / 2;
                 let padded = format!("{:>w$}{}", "", value, w = padding as usize);
-                let style = if is_selected { selected_style } else { normal_style };
+                let style = if is_selected {
+                    selected_style
+                } else {
+                    normal_style
+                };
                 frame.render_widget(Paragraph::new(Span::styled(padded, style)), row_area);
             } else {
                 let label_w = 10;
                 let line = ratatui::text::Line::from(vec![
                     Span::styled(
                         format!("  {:<w$}", label, w = label_w),
-                        if is_selected { selected_style } else { normal_style },
+                        if is_selected {
+                            selected_style
+                        } else {
+                            normal_style
+                        },
                     ),
                     Span::styled(
                         value.clone(),
-                        if is_selected { selected_style } else { value_style },
+                        if is_selected {
+                            selected_style
+                        } else {
+                            value_style
+                        },
                     ),
                 ]);
                 frame.render_widget(Paragraph::new(line), row_area);
@@ -1731,7 +1997,7 @@ impl<'a> App<'a> {
 
     /// Handle key events in the settings overlay.
     fn handle_settings_key(&mut self, key: crossterm::event::KeyEvent) {
-        let themes = crate::theme::Theme::available_themes();
+        let themes = self.theme_names();
         let n_themes = themes.len();
         let profiles = crate::config::RenderProfile::all();
         let n_profiles = profiles.len();
@@ -1767,62 +2033,58 @@ impl<'a> App<'a> {
                     SettingsRow::Reset => SettingsRow::Theme,
                 };
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                match self.settings_row {
-                    SettingsRow::Theme => {
-                        self.settings_theme_index = if self.settings_theme_index == 0 {
-                            n_themes - 1
-                        } else {
-                            self.settings_theme_index - 1
-                        };
-                        self.apply_settings_theme(themes[self.settings_theme_index]);
-                    }
-                    SettingsRow::Mode => {
-                        self.settings_mode_index = 1 - self.settings_mode_index;
-                    }
-                    SettingsRow::Profile => {
-                        self.settings_profile_index = if self.settings_profile_index == 0 {
-                            n_profiles - 1
-                        } else {
-                            self.settings_profile_index - 1
-                        };
-                        self.config.render_profile = profiles[self.settings_profile_index];
-                        self.content_dirty = true;
-                    }
-                    SettingsRow::SyncIndicator => {
-                        self.config.sync_indicator = !self.config.sync_indicator;
-                    }
-                    SettingsRow::WordWrap => {
-                        self.config.word_wrap = !self.config.word_wrap;
-                        self.editor.word_wrap = self.config.word_wrap;
-                    }
-                    SettingsRow::Save | SettingsRow::Reset => {}
+            KeyCode::Left | KeyCode::Char('h') => match self.settings_row {
+                SettingsRow::Theme => {
+                    self.settings_theme_index = if self.settings_theme_index == 0 {
+                        n_themes - 1
+                    } else {
+                        self.settings_theme_index - 1
+                    };
+                    self.apply_settings_theme(&themes[self.settings_theme_index]);
                 }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                match self.settings_row {
-                    SettingsRow::Theme => {
-                        self.settings_theme_index = (self.settings_theme_index + 1) % n_themes;
-                        self.apply_settings_theme(themes[self.settings_theme_index]);
-                    }
-                    SettingsRow::Mode => {
-                        self.settings_mode_index = 1 - self.settings_mode_index;
-                    }
-                    SettingsRow::Profile => {
-                        self.settings_profile_index = (self.settings_profile_index + 1) % n_profiles;
-                        self.config.render_profile = profiles[self.settings_profile_index];
-                        self.content_dirty = true;
-                    }
-                    SettingsRow::SyncIndicator => {
-                        self.config.sync_indicator = !self.config.sync_indicator;
-                    }
-                    SettingsRow::WordWrap => {
-                        self.config.word_wrap = !self.config.word_wrap;
-                        self.editor.word_wrap = self.config.word_wrap;
-                    }
-                    SettingsRow::Save | SettingsRow::Reset => {}
+                SettingsRow::Mode => {
+                    self.settings_mode_index = 1 - self.settings_mode_index;
                 }
-            }
+                SettingsRow::Profile => {
+                    self.settings_profile_index = if self.settings_profile_index == 0 {
+                        n_profiles - 1
+                    } else {
+                        self.settings_profile_index - 1
+                    };
+                    self.config.render_profile = profiles[self.settings_profile_index];
+                    self.content_dirty = true;
+                }
+                SettingsRow::SyncIndicator => {
+                    self.config.sync_indicator = !self.config.sync_indicator;
+                }
+                SettingsRow::WordWrap => {
+                    self.config.word_wrap = !self.config.word_wrap;
+                    self.editor.word_wrap = self.config.word_wrap;
+                }
+                SettingsRow::Save | SettingsRow::Reset => {}
+            },
+            KeyCode::Right | KeyCode::Char('l') => match self.settings_row {
+                SettingsRow::Theme => {
+                    self.settings_theme_index = (self.settings_theme_index + 1) % n_themes;
+                    self.apply_settings_theme(&themes[self.settings_theme_index]);
+                }
+                SettingsRow::Mode => {
+                    self.settings_mode_index = 1 - self.settings_mode_index;
+                }
+                SettingsRow::Profile => {
+                    self.settings_profile_index = (self.settings_profile_index + 1) % n_profiles;
+                    self.config.render_profile = profiles[self.settings_profile_index];
+                    self.content_dirty = true;
+                }
+                SettingsRow::SyncIndicator => {
+                    self.config.sync_indicator = !self.config.sync_indicator;
+                }
+                SettingsRow::WordWrap => {
+                    self.config.word_wrap = !self.config.word_wrap;
+                    self.editor.word_wrap = self.config.word_wrap;
+                }
+                SettingsRow::Save | SettingsRow::Reset => {}
+            },
             KeyCode::Enter => {
                 match self.settings_row {
                     SettingsRow::Save => {
@@ -1846,7 +2108,7 @@ impl<'a> App<'a> {
                     SettingsRow::Reset => {
                         // Reset to defaults
                         self.settings_theme_index = 0; // ocean
-                        self.settings_mode_index = 0;  // vim
+                        self.settings_mode_index = 0; // vim
                         self.settings_profile_index = 0; // github
                         self.apply_settings_theme("ocean");
                         self.config.mode = crate::config::EditingMode::Vim;
@@ -1880,7 +2142,7 @@ impl<'a> App<'a> {
 
     /// Apply a theme by name from the settings panel (live preview).
     fn apply_settings_theme(&mut self, name: &str) {
-        if let Some(new_theme) = crate::theme::Theme::by_name(name) {
+        if let Some(new_theme) = crate::config::resolve_theme_name(&self.config, name) {
             let cap = crate::theme::detect_color_capability();
             let applied = if cap == crate::theme::ColorCapability::Color256 {
                 new_theme.with_256_color_fallback()
@@ -1891,6 +2153,138 @@ impl<'a> App<'a> {
             self.theme = applied;
             self.config.theme = name.to_string();
             self.content_dirty = true;
+        }
+    }
+
+    fn theme_names(&self) -> Vec<String> {
+        crate::config::available_theme_names(&self.config)
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic payload was not a string".to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, LayoutMode};
+    use crate::clipboard::ClipboardProvider;
+    use crate::config::{Config, EditingMode};
+    use crate::markdown::MarkdownRenderer;
+    use crate::theme::Theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    struct TestClipboard;
+
+    impl ClipboardProvider for TestClipboard {
+        fn write(&self, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn read(&self) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn name(&self) -> &str {
+            "test"
+        }
+    }
+
+    fn test_app(content: &str) -> App<'static> {
+        let config = Config {
+            mode: EditingMode::Nano,
+            ..Config::default()
+        };
+
+        App::new(
+            Some(content.to_string()),
+            None,
+            Theme::ocean(),
+            EditingMode::Nano,
+            Box::new(TestClipboard),
+            config,
+        )
+    }
+
+    #[test]
+    fn do_save_preserves_crlf_and_trailing_newline() {
+        let filename = format!(
+            "mdedit-save-test-{}-{}.md",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(filename);
+
+        let config = Config {
+            mode: EditingMode::Nano,
+            ..Config::default()
+        };
+
+        let mut app = App::new(
+            Some("alpha\r\nbeta\r\n".to_string()),
+            Some(PathBuf::from(&path)),
+            Theme::ocean(),
+            EditingMode::Nano,
+            Box::new(TestClipboard),
+            config,
+        );
+
+        app.editor.textarea_mut().insert_str("!");
+        app.mark_content_changed();
+
+        assert!(app.do_save());
+        let saved = std::fs::read(&path).expect("saved file should exist");
+        assert_eq!(saved, b"!alpha\r\nbeta\r\n");
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn split_render_handles_zero_width_panes() {
+        let mut app = test_app("# mdedit\n\nA tiny render test.");
+        let rendered =
+            app.renderer
+                .render(&app.editor.content(), app.config.render_profile, &app.theme);
+        app.preview_text = rendered.text;
+        app.source_to_preview = rendered.source_to_preview;
+        app.content_dirty = false;
+        app.layout_mode = LayoutMode::Split;
+
+        let backend = TestBackend::new(1, 2);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| app.render(frame))
+            .expect("render should not panic on zero-width panes");
+    }
+
+    #[test]
+    fn readme_preview_update_and_split_render_survive_terminal_size_matrix() {
+        let mut app = test_app(include_str!("../README.md"));
+        app.last_edit_time = Some(Instant::now() - Duration::from_millis(100));
+        app.maybe_update_preview();
+        app.layout_mode = LayoutMode::Split;
+
+        for width in 1..=140 {
+            for height in [2u16, 3, 4, 5, 8, 12, 20, 30, 40] {
+                let backend = TestBackend::new(width, height);
+                let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+                terminal
+                    .draw(|frame| app.render(frame))
+                    .expect("README render matrix should not panic");
+            }
         }
     }
 }

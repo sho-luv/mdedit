@@ -142,17 +142,13 @@ fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
 
-/// Draw a subtle left-edge indicator marker on a preview line.
-/// Uses a thin colored bar on the left edge without overwriting content.
+/// Draw a subtle indicator on the synced preview line.
+/// Tints the whole row's background without overwriting any glyphs — an earlier
+/// version stamped a block char at the left edge, which destroyed the first
+/// character of the synced line (e.g. "PROJECT" rendered as "▏ROJECT").
 fn draw_indicator(buf: &mut Buffer, x: u16, y: u16, width: u16, theme: &Theme) {
     if width == 0 {
         return;
-    }
-
-    // Draw a small marker on the left edge
-    if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.set_char('\u{258F}'); // left 1/8 block
-        cell.set_fg(theme.preview_indicator_fg);
     }
 
     // Subtle background tint across the whole line

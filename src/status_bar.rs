@@ -7,6 +7,13 @@ use std::time::{Duration, Instant};
 
 use crate::theme::Theme;
 
+pub struct StatusBarContent<'a> {
+    pub filename: &'a str,
+    pub cursor: (usize, usize),
+    pub modified: bool,
+    pub vim_mode: Option<(&'a str, ratatui::style::Color)>,
+}
+
 /// Status bar widget that displays filename, cursor position, modified
 /// indicator, and timed messages (e.g., "Saved" for 2 seconds).
 pub struct StatusBar {
@@ -27,17 +34,6 @@ impl StatusBar {
         self.timed_message = Some((msg.to_string(), Instant::now()));
     }
 
-    /// Returns true if a timed message is currently active (not yet expired).
-    /// Used by the event loop to know when a redraw is needed for message expiry.
-    #[allow(dead_code)]
-    pub fn is_message_active(&self) -> bool {
-        if let Some((_, ref when)) = self.timed_message {
-            when.elapsed() < self.message_duration
-        } else {
-            false
-        }
-    }
-
     /// Render the status bar into the given area.
     ///
     /// If a timed message is active, it is displayed. Otherwise, the normal
@@ -50,13 +46,16 @@ impl StatusBar {
         &self,
         frame: &mut Frame,
         area: Rect,
-        filename: &str,
-        cursor: (usize, usize),
-        modified: bool,
         theme: &Theme,
-        vim_mode: Option<(&str, ratatui::style::Color)>,
+        content: StatusBarContent<'_>,
     ) {
-        let style = Style::default().bg(theme.status_bar_bg).fg(theme.status_bar_fg);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let style = Style::default()
+            .bg(theme.status_bar_bg)
+            .fg(theme.status_bar_fg);
 
         // Check if timed message is still active
         if let Some((ref msg, ref when)) = self.timed_message {
@@ -67,17 +66,17 @@ impl StatusBar {
             }
         }
 
-        let mod_indicator = if modified { " [+]" } else { "" };
-        let (row, col) = cursor;
+        let mod_indicator = if content.modified { " [+]" } else { "" };
+        let (row, col) = content.cursor;
 
-        if let Some((label, bg_color)) = vim_mode {
+        if let Some((label, bg_color)) = content.vim_mode {
             // Vim mode status bar: mode label on the left with mode bg color
             let mode_label = format!(" {} ", label);
-            let file_info = format!(" {}{}", filename, mod_indicator);
+            let file_info = format!(" {}{}", content.filename, mod_indicator);
 
             // Mode-appropriate hints
             let hints = if label.contains("NORMAL") {
-                "i Insert | v Visual | :w Save | :q Quit"
+                "i Insert | v Visual | :w Save | :set Settings | :q Quit"
             } else if label.contains("INSERT") {
                 "Esc Normal | Type to edit"
             } else if label.contains("VISUAL") {
@@ -92,18 +91,26 @@ impl StatusBar {
             let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
 
             let available = area.width as usize;
-            let right = if mode_label.len() + file_info.len() + right_with_hints.len() <= available {
+            let right = if mode_label.len() + file_info.len() + right_with_hints.len() <= available
+            {
                 right_with_hints
             } else {
                 right_no_hints
             };
 
             let used = mode_label.len() + file_info.len() + right.len();
-            let spacer_width = if available > used { available - used } else { 1 };
+            let spacer_width = if available > used {
+                available - used
+            } else {
+                1
+            };
             let spacer = " ".repeat(spacer_width);
 
             let line = Line::from(vec![
-                Span::styled(mode_label, Style::default().bg(bg_color).fg(theme.status_bar_fg)),
+                Span::styled(
+                    mode_label,
+                    Style::default().bg(bg_color).fg(theme.status_bar_fg),
+                ),
                 Span::raw(file_info),
                 Span::raw(spacer),
                 Span::raw(right),
@@ -113,7 +120,7 @@ impl StatusBar {
             frame.render_widget(paragraph, area);
         } else {
             // Nano mode status bar (unchanged)
-            let left = format!(" {}{}", filename, mod_indicator);
+            let left = format!(" {}{}", content.filename, mod_indicator);
             let hints = "Ctrl+S Save | Ctrl+P Preview | Ctrl+Q Quit";
             let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
             let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
@@ -126,14 +133,14 @@ impl StatusBar {
             };
 
             let used = left.len() + right.len();
-            let spacer_width = if available > used { available - used } else { 1 };
+            let spacer_width = if available > used {
+                available - used
+            } else {
+                1
+            };
             let spacer = " ".repeat(spacer_width);
 
-            let line = Line::from(vec![
-                Span::raw(left),
-                Span::raw(spacer),
-                Span::raw(right),
-            ]);
+            let line = Line::from(vec![Span::raw(left), Span::raw(spacer), Span::raw(right)]);
 
             let paragraph = Paragraph::new(line).style(style);
             frame.render_widget(paragraph, area);

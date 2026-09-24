@@ -38,6 +38,19 @@ pub struct Theme {
     pub prompt_bg: Color,
     pub prompt_fg: Color,
     pub syntect_theme: String,
+    pub preview_fg: Color,
+    pub preview_muted_fg: Color,
+    pub preview_link_fg: Color,
+    pub preview_inline_code_fg: Color,
+    pub preview_inline_code_bg: Color,
+    pub preview_code_bg: Color,
+    pub preview_indicator_fg: Color,
+    pub preview_indicator_bg: Color,
+    pub preview_accent_primary: Color,
+    pub preview_accent_secondary: Color,
+    pub preview_accent_tertiary: Color,
+    pub preview_accent_warning: Color,
+    pub preview_accent_danger: Color,
     // Vim mode indicator colors
     pub mode_normal_bg: Color,
     pub mode_insert_bg: Color,
@@ -65,6 +78,19 @@ impl Theme {
             prompt_bg: Color::Blue,
             prompt_fg: Color::White,
             syntect_theme: "base16-ocean.dark".to_string(),
+            preview_fg: Color::Rgb(230, 237, 243),
+            preview_muted_fg: Color::Rgb(139, 148, 158),
+            preview_link_fg: Color::Rgb(88, 166, 255),
+            preview_inline_code_fg: Color::Rgb(255, 208, 96),
+            preview_inline_code_bg: Color::Rgb(40, 40, 50),
+            preview_code_bg: Color::Rgb(30, 30, 40),
+            preview_indicator_fg: Color::Rgb(88, 166, 255),
+            preview_indicator_bg: Color::Rgb(20, 30, 45),
+            preview_accent_primary: Color::Rgb(88, 166, 255),
+            preview_accent_secondary: Color::Rgb(126, 231, 135),
+            preview_accent_tertiary: Color::Rgb(168, 131, 255),
+            preview_accent_warning: Color::Rgb(255, 208, 96),
+            preview_accent_danger: Color::Rgb(248, 81, 73),
             mode_normal_bg: Color::DarkGray,
             mode_insert_bg: Color::Rgb(0, 100, 0),
             mode_visual_bg: Color::Rgb(0, 0, 139),
@@ -91,6 +117,19 @@ impl Theme {
             prompt_bg: Color::Rgb(98, 114, 164),
             prompt_fg: Color::Rgb(248, 248, 242),
             syntect_theme: "Solarized (dark)".to_string(),
+            preview_fg: Color::Rgb(248, 248, 242),
+            preview_muted_fg: Color::Rgb(98, 114, 164),
+            preview_link_fg: Color::Rgb(139, 233, 253),
+            preview_inline_code_fg: Color::Rgb(241, 250, 140),
+            preview_inline_code_bg: Color::Rgb(68, 71, 90),
+            preview_code_bg: Color::Rgb(40, 42, 54),
+            preview_indicator_fg: Color::Rgb(139, 233, 253),
+            preview_indicator_bg: Color::Rgb(68, 71, 90),
+            preview_accent_primary: Color::Rgb(139, 233, 253),
+            preview_accent_secondary: Color::Rgb(80, 250, 123),
+            preview_accent_tertiary: Color::Rgb(189, 147, 249),
+            preview_accent_warning: Color::Rgb(255, 184, 108),
+            preview_accent_danger: Color::Rgb(255, 85, 85),
             mode_normal_bg: Color::Rgb(68, 71, 90),
             mode_insert_bg: Color::Rgb(80, 250, 123),
             mode_visual_bg: Color::Rgb(189, 147, 249),
@@ -117,6 +156,19 @@ impl Theme {
             prompt_bg: Color::Rgb(38, 139, 210),
             prompt_fg: Color::Rgb(253, 246, 227),
             syntect_theme: "Solarized (light)".to_string(),
+            preview_fg: Color::Rgb(88, 110, 117),
+            preview_muted_fg: Color::Rgb(147, 161, 161),
+            preview_link_fg: Color::Rgb(38, 139, 210),
+            preview_inline_code_fg: Color::Rgb(181, 137, 0),
+            preview_inline_code_bg: Color::Rgb(238, 232, 213),
+            preview_code_bg: Color::Rgb(248, 242, 223),
+            preview_indicator_fg: Color::Rgb(38, 139, 210),
+            preview_indicator_bg: Color::Rgb(238, 232, 213),
+            preview_accent_primary: Color::Rgb(38, 139, 210),
+            preview_accent_secondary: Color::Rgb(133, 153, 0),
+            preview_accent_tertiary: Color::Rgb(108, 113, 196),
+            preview_accent_warning: Color::Rgb(181, 137, 0),
+            preview_accent_danger: Color::Rgb(220, 50, 47),
             mode_normal_bg: Color::Rgb(238, 232, 213),
             mode_insert_bg: Color::Rgb(133, 153, 0),
             mode_visual_bg: Color::Rgb(38, 139, 210),
@@ -143,6 +195,19 @@ impl Theme {
             prompt_bg: Color::Rgb(69, 133, 136),
             prompt_fg: Color::Rgb(235, 219, 178),
             syntect_theme: "base16-ocean.dark".to_string(),
+            preview_fg: Color::Rgb(235, 219, 178),
+            preview_muted_fg: Color::Rgb(146, 131, 116),
+            preview_link_fg: Color::Rgb(131, 165, 152),
+            preview_inline_code_fg: Color::Rgb(250, 189, 47),
+            preview_inline_code_bg: Color::Rgb(60, 56, 54),
+            preview_code_bg: Color::Rgb(50, 48, 47),
+            preview_indicator_fg: Color::Rgb(131, 165, 152),
+            preview_indicator_bg: Color::Rgb(60, 56, 54),
+            preview_accent_primary: Color::Rgb(131, 165, 152),
+            preview_accent_secondary: Color::Rgb(184, 187, 38),
+            preview_accent_tertiary: Color::Rgb(211, 134, 155),
+            preview_accent_warning: Color::Rgb(250, 189, 47),
+            preview_accent_danger: Color::Rgb(204, 36, 29),
             mode_normal_bg: Color::Rgb(80, 73, 69),
             mode_insert_bg: Color::Rgb(152, 151, 26),
             mode_visual_bg: Color::Rgb(69, 133, 136),
@@ -186,6 +251,19 @@ impl Theme {
         t.confirm_fg = rgb_to_256(t.confirm_fg);
         t.prompt_bg = rgb_to_256(t.prompt_bg);
         t.prompt_fg = rgb_to_256(t.prompt_fg);
+        t.preview_fg = rgb_to_256(t.preview_fg);
+        t.preview_muted_fg = rgb_to_256(t.preview_muted_fg);
+        t.preview_link_fg = rgb_to_256(t.preview_link_fg);
+        t.preview_inline_code_fg = rgb_to_256(t.preview_inline_code_fg);
+        t.preview_inline_code_bg = rgb_to_256(t.preview_inline_code_bg);
+        t.preview_code_bg = rgb_to_256(t.preview_code_bg);
+        t.preview_indicator_fg = rgb_to_256(t.preview_indicator_fg);
+        t.preview_indicator_bg = rgb_to_256(t.preview_indicator_bg);
+        t.preview_accent_primary = rgb_to_256(t.preview_accent_primary);
+        t.preview_accent_secondary = rgb_to_256(t.preview_accent_secondary);
+        t.preview_accent_tertiary = rgb_to_256(t.preview_accent_tertiary);
+        t.preview_accent_warning = rgb_to_256(t.preview_accent_warning);
+        t.preview_accent_danger = rgb_to_256(t.preview_accent_danger);
         t.mode_normal_bg = rgb_to_256(t.mode_normal_bg);
         t.mode_insert_bg = rgb_to_256(t.mode_insert_bg);
         t.mode_visual_bg = rgb_to_256(t.mode_visual_bg);
@@ -275,6 +353,71 @@ impl Theme {
         if let Some(ref s) = custom.syntect_theme {
             t.syntect_theme = s.clone();
         }
+        if let Some(ref s) = custom.preview_fg {
+            if let Some(c) = parse_color(s) {
+                t.preview_fg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_muted_fg {
+            if let Some(c) = parse_color(s) {
+                t.preview_muted_fg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_link_fg {
+            if let Some(c) = parse_color(s) {
+                t.preview_link_fg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_inline_code_fg {
+            if let Some(c) = parse_color(s) {
+                t.preview_inline_code_fg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_inline_code_bg {
+            if let Some(c) = parse_color(s) {
+                t.preview_inline_code_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_code_bg {
+            if let Some(c) = parse_color(s) {
+                t.preview_code_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_indicator_fg {
+            if let Some(c) = parse_color(s) {
+                t.preview_indicator_fg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_indicator_bg {
+            if let Some(c) = parse_color(s) {
+                t.preview_indicator_bg = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_accent_primary {
+            if let Some(c) = parse_color(s) {
+                t.preview_accent_primary = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_accent_secondary {
+            if let Some(c) = parse_color(s) {
+                t.preview_accent_secondary = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_accent_tertiary {
+            if let Some(c) = parse_color(s) {
+                t.preview_accent_tertiary = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_accent_warning {
+            if let Some(c) = parse_color(s) {
+                t.preview_accent_warning = c;
+            }
+        }
+        if let Some(ref s) = custom.preview_accent_danger {
+            if let Some(c) = parse_color(s) {
+                t.preview_accent_danger = c;
+            }
+        }
         if let Some(ref s) = custom.mode_normal_bg {
             if let Some(c) = parse_color(s) {
                 t.mode_normal_bg = c;
@@ -320,6 +463,19 @@ pub struct ThemeColors {
     pub prompt_bg: Option<String>,
     pub prompt_fg: Option<String>,
     pub syntect_theme: Option<String>,
+    pub preview_fg: Option<String>,
+    pub preview_muted_fg: Option<String>,
+    pub preview_link_fg: Option<String>,
+    pub preview_inline_code_fg: Option<String>,
+    pub preview_inline_code_bg: Option<String>,
+    pub preview_code_bg: Option<String>,
+    pub preview_indicator_fg: Option<String>,
+    pub preview_indicator_bg: Option<String>,
+    pub preview_accent_primary: Option<String>,
+    pub preview_accent_secondary: Option<String>,
+    pub preview_accent_tertiary: Option<String>,
+    pub preview_accent_warning: Option<String>,
+    pub preview_accent_danger: Option<String>,
     pub mode_normal_bg: Option<String>,
     pub mode_insert_bg: Option<String>,
     pub mode_visual_bg: Option<String>,

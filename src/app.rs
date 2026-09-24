@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use crate::editor::{Editor, EditorAction};
 use crate::file_io;
-use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
-use crate::preview::{Preview, PreviewMetrics};
+use crate::markdown::{MarkdownRenderer, PreviewRenderer, RenderResult};
+use crate::preview::Preview;
 use crate::status_bar::{StatusBar, StatusBarContent};
 use crate::vim::{InsertPosition, Motion, VimCommand, VimHandler};
 
@@ -43,6 +43,25 @@ impl LayoutMode {
             Self::PreviewOnly => "Preview Only",
         }
     }
+}
+
+/// Which pane currently has input focus (btop-style focus-follows-click).
+/// The focused pane gets an accent border; while the preview is focused,
+/// scroll keys drive it and cursor scroll-sync is paused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedPane {
+    Editor,
+    Preview,
+}
+
+/// Clickable buttons drawn over the top border of the rightmost panel
+/// (btop-style `┤ key label ├` controls).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiButton {
+    Help,
+    Settings,
+    View,
+    Quit,
 }
 
 /// Application mode — determines how key events are routed and what the
@@ -97,11 +116,13 @@ pub struct App<'a> {
     /// Preview component managing scroll state.
     preview: Preview,
     /// Markdown renderer (abstracted behind trait for replaceability).
-    renderer: TuiMarkdownRenderer,
-    /// Cached rendered preview text.
-    preview_text: ratatui::text::Text<'static>,
-    /// Source line -> preview line mapping for scroll sync.
-    source_to_preview: Vec<usize>,
+    renderer: PreviewRenderer,
+    /// Cached preview, laid out for the current preview pane width. Carries
+    /// the exact source-line <-> row maps used for scroll sync.
+    preview_doc: RenderResult,
+    /// How long the last preview render took; small documents skip the
+    /// debounce and update on every keystroke.
+    last_render_cost: Duration,
     /// Flag: content changed since last preview render.
     content_dirty: bool,
     /// Timestamp of last edit (for debounce).
@@ -129,6 +150,14 @@ pub struct App<'a> {
     preview_area: Option<Rect>,
     /// Track divider area for mouse hit testing.
     divider_area: Option<Rect>,
+    /// Full body area of the split layout (for divider drag ratio math).
+    split_body_area: Option<Rect>,
+    /// Which pane has input focus (btop-style focus-follows-click).
+    focused_pane: FocusedPane,
+    /// Hit areas of the title-bar buttons, rebuilt every frame.
+    button_areas: Vec<(Rect, UiButton)>,
+    /// Whether the keybindings help overlay is visible.
+    show_help: bool,
     /// Whether user is currently dragging the divider.
     dragging_divider: bool,
     /// Whether user is currently drag-selecting text.
@@ -182,9 +211,9 @@ impl<'a> App<'a> {
             quit_after_save: false,
             layout_mode: LayoutMode::Split, // D-11: default to split
             preview: Preview::new(),
-            renderer: TuiMarkdownRenderer,
-            preview_text: ratatui::text::Text::default(),
-            source_to_preview: Vec::new(),
+            renderer: PreviewRenderer,
+            preview_doc: RenderResult::empty(),
+            last_render_cost: Duration::ZERO,
             content_dirty: true, // Render initial content on first frame
             last_edit_time: Some(Instant::now()),
             search_query: String::new(),
@@ -198,6 +227,10 @@ impl<'a> App<'a> {
             editor_area: None,
             preview_area: None,
             divider_area: None,
+            split_body_area: None,
+            focused_pane: FocusedPane::Editor,
+            button_areas: Vec::new(),
+            show_help: false,
             dragging_divider: false,
             drag_selecting: false,
             clipboard,
@@ -219,74 +252,90 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Synchronize preview scroll to editor cursor position.
-    /// Uses source-to-preview line mapping when available, falls back to proportional.
-    /// Only active in Split mode. Called during render on every frame.
-    fn sync_preview_scroll(&mut self, preview_area_height: u16, metrics: &PreviewMetrics) {
+    /// Synchronize preview scroll to the editor cursor (Split mode only).
+    ///
+    /// The first preview row of the cursor's source line is placed on the same
+    /// screen row as the start of that line in the editor, so a line and its
+    /// rendered counterpart sit side by side. The editor renders first each
+    /// frame, so its screen-row information is fresh.
+    fn sync_preview_scroll(&mut self, preview_area_height: u16) {
         if self.layout_mode != LayoutMode::Split {
             return;
         }
         let (cursor_row, _) = self.editor.cursor_position();
-        let total_preview = metrics.total_visual_lines();
+        let total_rows = self.preview_doc.rows.len();
+        let target_row = match self.preview_doc.row_for_source(cursor_row) {
+            Some(row) => row,
+            None if total_rows == 0 => {
+                self.preview.set_scroll(0);
+                return;
+            }
+            // Unmapped (e.g. preview is showing an error): proportional.
+            None => {
+                let total_source = self.editor.line_count().saturating_sub(1).max(1);
+                cursor_row * total_rows.saturating_sub(1) / total_source
+            }
+        };
 
-        if total_preview == 0 {
-            self.preview.set_scroll(0);
+        let line_screen_row = self.editor.cursor_line_screen_row();
+        let offset = (target_row as i64 - i64::from(line_screen_row)).max(0) as usize;
+        let max_scroll = total_rows.saturating_sub(usize::from(preview_area_height));
+        self.preview.set_scroll(offset.min(max_scroll));
+    }
+
+    /// How long to wait after the last edit before re-rendering the preview.
+    /// Cheap documents render immediately; expensive ones are debounced (D-04).
+    fn preview_debounce(&self) -> Duration {
+        if self.last_render_cost < Duration::from_millis(8) {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(80)
+        }
+    }
+
+    /// Time until a pending debounced preview render is due, if any.
+    fn preview_due_in(&self) -> Option<Duration> {
+        if !self.content_dirty {
+            return None;
+        }
+        let debounce = self.preview_debounce();
+        Some(match self.last_edit_time {
+            Some(t) => debounce.saturating_sub(t.elapsed()),
+            None => Duration::ZERO,
+        })
+    }
+
+    /// Re-render the preview when content changed (after the debounce) or the
+    /// pane width changed. Called during render with the actual pane width.
+    fn refresh_preview(&mut self, width: u16) {
+        let content_due = self.preview_due_in() == Some(Duration::ZERO);
+        let width_changed = self.preview_doc.width != width;
+        if !content_due && !width_changed {
             return;
         }
 
-        // Use the source-to-preview line map for precise scroll sync
-        let target_line =
-            if !self.source_to_preview.is_empty() && cursor_row < self.source_to_preview.len() {
-                metrics.visual_line_for_logical(self.source_to_preview[cursor_row])
-            } else {
-                // Fallback to proportional mapping
-                let total_source = self.editor.line_count();
-                let ratio = cursor_row as f64 / total_source.saturating_sub(1).max(1) as f64;
-                (ratio * total_preview as f64) as u16
-            };
+        let started = Instant::now();
+        let content = self.editor.content();
+        let render_result = catch_unwind(AssertUnwindSafe(|| {
+            self.renderer
+                .render(&content, self.config.render_profile, &self.theme, width)
+        }));
 
-        // Align the matched preview line with the editor cursor's screen row so
-        // the cursor and its rendered counterpart sit on the same row across the
-        // split. The editor renders first each frame, so cursor_screen_row is fresh.
-        let cursor_screen_row = self.editor.cursor_screen_row();
-        let target_offset = target_line.saturating_sub(cursor_screen_row);
-        let max_scroll = total_preview.saturating_sub(preview_area_height);
-        self.preview.set_scroll(target_offset.min(max_scroll));
-    }
-
-    /// Debounced preview update (D-04). Only re-renders after 80ms idle.
-    fn maybe_update_preview(&mut self) {
-        if self.content_dirty {
-            if let Some(last_edit) = self.last_edit_time {
-                if last_edit.elapsed() >= Duration::from_millis(80) {
-                    let content = self.editor.content();
-                    let render_result = catch_unwind(AssertUnwindSafe(|| {
-                        self.renderer
-                            .render(&content, self.config.render_profile, &self.theme)
-                    }));
-
-                    match render_result {
-                        Ok(result) => {
-                            self.preview_text = result.text;
-                            self.source_to_preview = result.source_to_preview;
-                        }
-                        Err(payload) => {
-                            let message = panic_message(payload);
-                            self.preview_text = ratatui::text::Text::from(vec![
-                                ratatui::text::Line::from("Preview render failed"),
-                                ratatui::text::Line::from(message.clone()),
-                            ]);
-                            self.source_to_preview.clear();
-                            self.preview.set_scroll(0);
-                            self.status_bar
-                                .set_message("Preview render failed; editor still available");
-                        }
-                    }
-                    self.content_dirty = false;
-                    self.last_edit_time = None;
-                }
+        match render_result {
+            Ok(doc) => self.preview_doc = doc,
+            Err(payload) => {
+                let message = panic_message(payload);
+                let mut doc = RenderResult::message(&["Preview render failed", &message]);
+                doc.width = width;
+                self.preview_doc = doc;
+                self.preview.set_scroll(0);
+                self.status_bar
+                    .set_message("Preview render failed; editor still available");
             }
         }
+        self.last_render_cost = started.elapsed();
+        self.content_dirty = false;
+        self.last_edit_time = None;
     }
 
     /// Main event loop. Draws the UI and processes events until quit.
@@ -295,58 +344,29 @@ impl<'a> App<'a> {
         terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
         loop {
-            // Update preview before drawing (debounced)
-            self.maybe_update_preview();
-
             terminal.draw(|frame| self.render(frame))?;
 
-            // Poll with 50ms timeout so timed status messages can expire
-            // and debounced preview can trigger
-            if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        // IMPORTANT: filter for Press only to avoid double-handling
-                        // on Windows and some terminals
-                        if key.kind == KeyEventKind::Press {
-                            match self.mode {
-                                AppMode::Editing => self.handle_editing_key(key),
-                                AppMode::Normal => self.handle_vim_key(key),
-                                AppMode::Insert => self.handle_vim_insert_key(key),
-                                AppMode::Visual => self.handle_vim_visual_key(key),
-                                AppMode::Command => self.handle_vim_command_key(key),
-                                AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
-                                AppMode::PromptFilename => self.handle_prompt_filename_key(key),
-                                AppMode::Search => self.handle_search_key(key),
-                                AppMode::Settings => self.handle_settings_key(key),
-                            }
+            // Sleep until input arrives, a debounced preview render is due,
+            // highlighting has more visible lines to catch up on, or a periodic
+            // tick (lets timed status messages expire).
+            let timeout = if self.editor.highlight_pending() {
+                Duration::from_millis(1)
+            } else {
+                self.preview_due_in()
+                    .unwrap_or(Duration::from_millis(250))
+                    .max(Duration::from_millis(1))
+            };
+            if !event::poll(timeout)? {
+                continue;
+            }
 
-                            // Cursor shape changes per mode
-                            match self.mode {
-                                AppMode::Normal | AppMode::Visual | AppMode::Command => {
-                                    let _ = crossterm::execute!(
-                                        std::io::stdout(),
-                                        SetCursorStyle::SteadyBlock
-                                    );
-                                }
-                                AppMode::Insert | AppMode::Editing => {
-                                    let _ = crossterm::execute!(
-                                        std::io::stdout(),
-                                        SetCursorStyle::SteadyBar
-                                    );
-                                }
-                                _ => {} // ConfirmQuit, PromptFilename, Search keep current
-                            }
-                        }
-                    }
-                    Event::Mouse(mouse) => {
-                        self.handle_mouse_event(mouse);
-                    }
-                    Event::Paste(text) => {
-                        // Bracketed paste: insert text at cursor regardless of mode
-                        self.editor.textarea_mut().insert_str(&text);
-                        self.mark_content_changed();
-                    }
-                    _ => {} // Event::Resize is a no-op — ratatui re-renders on next draw() (FOUND-06)
+            // Drain every queued event before drawing again, so key repeat and
+            // bursts of input never queue up behind redraws.
+            loop {
+                let event = event::read()?;
+                self.handle_event(event);
+                if self.should_quit || !event::poll(Duration::ZERO)? {
+                    break;
                 }
             }
 
@@ -355,6 +375,52 @@ impl<'a> App<'a> {
             }
         }
         Ok(())
+    }
+
+    fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::Key(key) => {
+                // IMPORTANT: filter for Press only to avoid double-handling
+                // on Windows and some terminals
+                if key.kind != KeyEventKind::Press || self.handle_global_key(key) {
+                    return;
+                }
+                let mode_before = self.mode.clone();
+                match self.mode {
+                    AppMode::Editing => self.handle_editing_key(key),
+                    AppMode::Normal => self.handle_vim_key(key),
+                    AppMode::Insert => self.handle_vim_insert_key(key),
+                    AppMode::Visual => self.handle_vim_visual_key(key),
+                    AppMode::Command => self.handle_vim_command_key(key),
+                    AppMode::ConfirmQuit => self.handle_confirm_quit_key(key),
+                    AppMode::PromptFilename => self.handle_prompt_filename_key(key),
+                    AppMode::Search => self.handle_search_key(key),
+                    AppMode::Settings => self.handle_settings_key(key),
+                }
+
+                // Cursor shape follows the mode; only touch the terminal when
+                // the mode actually changed.
+                if self.mode != mode_before {
+                    let style = match self.mode {
+                        AppMode::Normal | AppMode::Visual | AppMode::Command => {
+                            Some(SetCursorStyle::SteadyBlock)
+                        }
+                        AppMode::Insert | AppMode::Editing => Some(SetCursorStyle::SteadyBar),
+                        _ => None, // ConfirmQuit, PromptFilename, Search keep current
+                    };
+                    if let Some(style) = style {
+                        let _ = crossterm::execute!(std::io::stdout(), style);
+                    }
+                }
+            }
+            Event::Mouse(mouse) => self.handle_mouse_event(mouse),
+            Event::Paste(text) => {
+                // Bracketed paste: insert text at cursor regardless of mode
+                self.editor.textarea_mut().insert_str(&text);
+                self.mark_content_changed();
+            }
+            _ => {} // Resize: the next draw re-lays out (and re-renders the preview at the new width)
+        }
     }
 
     /// Perform the save operation. Returns true if save succeeded.
@@ -392,8 +458,7 @@ impl<'a> App<'a> {
 
         // Ctrl+P toggles layout mode (D-12) — intercept before editor to avoid conflict (Pitfall 2)
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
-            self.layout_mode = self.layout_mode.next();
-            self.status_bar.set_message(self.layout_mode.label()); // D-16
+            self.cycle_layout(); // D-16
             return;
         }
 
@@ -422,31 +487,9 @@ impl<'a> App<'a> {
             return;
         }
 
-        // In preview-only mode, route keys differently (D-13, D-14)
-        if self.layout_mode == LayoutMode::PreviewOnly {
-            match key.code {
-                KeyCode::Up => {
-                    self.preview.scroll_up(1);
-                    return;
-                }
-                KeyCode::Down => {
-                    self.preview.scroll_down(1);
-                    return;
-                }
-                KeyCode::PageUp => {
-                    self.preview.scroll_up(20);
-                    return;
-                }
-                KeyCode::PageDown => {
-                    self.preview.scroll_down(20);
-                    return;
-                }
-                _ => {
-                    // Any editing key switches back to split mode (D-14)
-                    self.layout_mode = LayoutMode::Split;
-                    // Fall through to normal editor key handling
-                }
-            }
+        // Preview-focused or preview-only: scroll keys drive the preview (D-13, D-14)
+        if self.preview_focus_intercept(key) {
+            return;
         }
 
         if let Some(action) = self.editor.handle_key(key) {
@@ -482,6 +525,143 @@ impl<'a> App<'a> {
             self.mode = AppMode::Normal;
         } else {
             self.mode = AppMode::Editing;
+        }
+    }
+
+    /// Global key intercepts that work in any editing surface: the help
+    /// overlay (modal while open), F1 help, and F2 settings.
+    /// Returns true when the key was consumed.
+    fn handle_global_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if self.show_help {
+            match key.code {
+                KeyCode::F(1) | KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                    self.show_help = false;
+                }
+                _ => {}
+            }
+            return true; // modal: swallow everything else while help is open
+        }
+        match key.code {
+            KeyCode::F(1)
+                if matches!(
+                    self.mode,
+                    AppMode::Editing | AppMode::Normal | AppMode::Insert | AppMode::Visual
+                ) =>
+            {
+                self.show_help = true;
+                true
+            }
+            KeyCode::F(2) if matches!(self.mode, AppMode::Editing | AppMode::Normal) => {
+                self.settings_row = SettingsRow::Theme;
+                self.mode = AppMode::Settings;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Cycle the layout mode and move focus to the pane that remains visible.
+    fn cycle_layout(&mut self) {
+        self.layout_mode = self.layout_mode.next();
+        self.focused_pane = match self.layout_mode {
+            LayoutMode::PreviewOnly => FocusedPane::Preview,
+            _ => FocusedPane::Editor,
+        };
+        self.status_bar.set_message(self.layout_mode.label());
+    }
+
+    /// Ask to quit: prompt about unsaved changes, otherwise quit immediately.
+    fn request_quit(&mut self) {
+        if self.editor.is_modified() {
+            self.mode = AppMode::ConfirmQuit;
+        } else {
+            self.should_quit = true;
+        }
+    }
+
+    /// When the preview pane is focused (or in preview-only layout), scroll
+    /// keys drive the preview instead of the editor. Returns true when the
+    /// key was consumed. Any other key hands focus back to the editor and
+    /// falls through to normal handling (restoring split view from
+    /// preview-only, matching the pre-existing behavior).
+    fn preview_focus_intercept(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let preview_active = self.layout_mode == LayoutMode::PreviewOnly
+            || (self.layout_mode == LayoutMode::Split && self.focused_pane == FocusedPane::Preview);
+        if !preview_active {
+            return false;
+        }
+
+        let refocus_editor = |app: &mut Self| {
+            app.focused_pane = FocusedPane::Editor;
+            if app.layout_mode == LayoutMode::PreviewOnly {
+                app.layout_mode = LayoutMode::Split;
+            }
+        };
+
+        // Ctrl/Alt chords are app-level (layout toggle, etc.) — hand focus
+        // back and let the mode handler deal with them.
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            refocus_editor(self);
+            return false;
+        }
+
+        // Letters are text in Insert/nano modes — only vim Normal/Visual
+        // treat j/k/g/G as preview scroll keys.
+        let letters = matches!(self.mode, AppMode::Normal | AppMode::Visual);
+        let page = self.preview_area.map(|a| a.height).unwrap_or(20);
+        match key.code {
+            KeyCode::Up => {
+                self.preview.scroll_up(1);
+                true
+            }
+            KeyCode::Down => {
+                self.preview.scroll_down(1);
+                true
+            }
+            KeyCode::Char('k') if letters => {
+                self.preview.scroll_up(1);
+                true
+            }
+            KeyCode::Char('j') if letters => {
+                self.preview.scroll_down(1);
+                true
+            }
+            KeyCode::PageUp => {
+                self.preview.scroll_up(page);
+                true
+            }
+            KeyCode::PageDown => {
+                self.preview.scroll_down(page);
+                true
+            }
+            KeyCode::Home => {
+                self.preview.set_scroll(0);
+                true
+            }
+            KeyCode::Char('g') if letters => {
+                self.preview.set_scroll(0);
+                true
+            }
+            KeyCode::End => {
+                // Render clamps and persists this to the true bottom.
+                self.preview.set_scroll(usize::MAX);
+                true
+            }
+            KeyCode::Char('G') if letters => {
+                self.preview.set_scroll(usize::MAX);
+                true
+            }
+            KeyCode::Esc => {
+                refocus_editor(self);
+                true
+            }
+            _ => {
+                refocus_editor(self);
+                false
+            }
         }
     }
 
@@ -1368,8 +1548,18 @@ impl<'a> App<'a> {
     fn handle_vim_key(&mut self, key: crossterm::event::KeyEvent) {
         // Ctrl+P toggles layout mode -- intercept before vim handler
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
-            self.layout_mode = self.layout_mode.next();
-            self.status_bar.set_message(self.layout_mode.label());
+            self.cycle_layout();
+            return;
+        }
+
+        // Ctrl+Q requests quit (matches the title-bar button hint)
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('q') {
+            self.request_quit();
+            return;
+        }
+
+        // Preview-focused or preview-only: scroll keys drive the preview
+        if self.preview_focus_intercept(key) {
             return;
         }
 
@@ -1383,6 +1573,11 @@ impl<'a> App<'a> {
 
     /// Handle key events in Vim Insert mode.
     fn handle_vim_insert_key(&mut self, key: crossterm::event::KeyEvent) {
+        // If the preview was focused by mouse, scroll keys drive it
+        if self.preview_focus_intercept(key) {
+            return;
+        }
+
         let cmd = self
             .vim_handler
             .as_mut()
@@ -1410,8 +1605,12 @@ impl<'a> App<'a> {
     fn handle_vim_visual_key(&mut self, key: crossterm::event::KeyEvent) {
         // Ctrl+P toggles layout mode
         if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('p') {
-            self.layout_mode = self.layout_mode.next();
-            self.status_bar.set_message(self.layout_mode.label());
+            self.cycle_layout();
+            return;
+        }
+
+        // Preview-focused: scroll keys drive the preview
+        if self.preview_focus_intercept(key) {
             return;
         }
 
@@ -1462,6 +1661,34 @@ impl<'a> App<'a> {
                 let col = mouse.column;
                 let row = mouse.row;
 
+                // Any click dismisses the help overlay (btop menu behavior)
+                if self.show_help {
+                    self.show_help = false;
+                    return;
+                }
+
+                // Title-bar buttons (only from editing surfaces, so a click
+                // can't abandon an active prompt)
+                if matches!(
+                    self.mode,
+                    AppMode::Editing | AppMode::Normal | AppMode::Insert | AppMode::Visual
+                ) {
+                    for (rect, button) in self.button_areas.clone() {
+                        if row == rect.y && col >= rect.x && col < rect.x + rect.width {
+                            match button {
+                                UiButton::Help => self.show_help = true,
+                                UiButton::Settings => {
+                                    self.settings_row = SettingsRow::Theme;
+                                    self.mode = AppMode::Settings;
+                                }
+                                UiButton::View => self.cycle_layout(),
+                                UiButton::Quit => self.request_quit(),
+                            }
+                            return;
+                        }
+                    }
+                }
+
                 // Check if click is on divider (D-22)
                 if let Some(div) = self.divider_area {
                     if col >= div.x
@@ -1481,11 +1708,22 @@ impl<'a> App<'a> {
                         && row >= editor.y
                         && row < editor.y + editor.height
                     {
+                        self.focused_pane = FocusedPane::Editor;
                         self.click_to_editor_cursor(col, row, &editor);
+                        return;
                     }
                 }
 
-                // Click in preview area -- no action (preview is read-only)
+                // Click in preview area focuses it (btop focus-follows-click)
+                if let Some(preview) = self.preview_area {
+                    if col >= preview.x
+                        && col < preview.x + preview.width
+                        && row >= preview.y
+                        && row < preview.y + preview.height
+                    {
+                        self.focused_pane = FocusedPane::Preview;
+                    }
+                }
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -1494,15 +1732,11 @@ impl<'a> App<'a> {
 
                 // Divider drag (D-22)
                 if self.dragging_divider {
-                    if let Some(editor) = self.editor_area {
-                        // Calculate new split ratio from mouse x position
-                        let total_width =
-                            editor.width + 1 + self.preview_area.map(|p| p.width).unwrap_or(0);
-                        if total_width > 0 {
-                            let editor_x_start = editor.x;
-                            let relative_x = col.saturating_sub(editor_x_start);
+                    if let Some(body) = self.split_body_area {
+                        if body.width > 0 {
+                            let relative_x = col.saturating_sub(body.x);
                             let new_ratio =
-                                ((relative_x as f32 / total_width as f32) * 100.0) as u16;
+                                ((relative_x as f32 / body.width as f32) * 100.0) as u16;
                             // Clamp to reasonable bounds (min 20%, max 80%)
                             self.split_ratio = new_ratio.clamp(20, 80);
                         }
@@ -1553,6 +1787,7 @@ impl<'a> App<'a> {
                 // Determine which pane to scroll (D-20)
                 if let Some(editor) = self.editor_area {
                     if col >= editor.x && col < editor.x + editor.width {
+                        self.focused_pane = FocusedPane::Editor;
                         // Scroll editor up by 3 lines
                         for _ in 0..3 {
                             self.editor.textarea_mut().move_cursor(CursorMove::Up);
@@ -1562,6 +1797,8 @@ impl<'a> App<'a> {
                 }
                 if let Some(preview) = self.preview_area {
                     if col >= preview.x && col < preview.x + preview.width {
+                        // Focus the preview so scroll-sync doesn't undo this
+                        self.focused_pane = FocusedPane::Preview;
                         self.preview.scroll_up(3);
                     }
                 }
@@ -1571,6 +1808,7 @@ impl<'a> App<'a> {
                 let col = mouse.column;
                 if let Some(editor) = self.editor_area {
                     if col >= editor.x && col < editor.x + editor.width {
+                        self.focused_pane = FocusedPane::Editor;
                         for _ in 0..3 {
                             self.editor.textarea_mut().move_cursor(CursorMove::Down);
                         }
@@ -1579,6 +1817,8 @@ impl<'a> App<'a> {
                 }
                 if let Some(preview) = self.preview_area {
                     if col >= preview.x && col < preview.x + preview.width {
+                        // Focus the preview so scroll-sync doesn't undo this
+                        self.focused_pane = FocusedPane::Preview;
                         self.preview.scroll_down(3);
                     }
                 }
@@ -1632,6 +1872,7 @@ impl<'a> App<'a> {
         let status_area = outer[1];
 
         let search_query = self.current_search_query().to_string();
+        self.button_areas.clear();
 
         match self.layout_mode {
             LayoutMode::Split => {
@@ -1639,89 +1880,130 @@ impl<'a> App<'a> {
                     .direction(Direction::Horizontal)
                     .constraints([
                         Constraint::Percentage(self.split_ratio),
-                        Constraint::Length(1),
                         Constraint::Percentage(100 - self.split_ratio),
                     ])
                     .split(body_area);
+                let editor_outer = chunks[0];
+                let preview_outer = chunks[1];
 
-                // Store areas for mouse hit testing
-                self.editor_area = Some(chunks[0]);
-                self.divider_area = Some(chunks[1]);
-                self.preview_area = Some(chunks[2]);
+                self.split_body_area = Some(body_area);
+                // The two adjacent panel border columns double as the resize
+                // handle (D-22).
+                self.divider_area = Some(Rect::new(
+                    preview_outer.x.saturating_sub(1),
+                    body_area.y,
+                    2.min(body_area.width),
+                    body_area.height,
+                ));
 
-                // Editor left — with syntax highlighting (D-09)
+                // Editor panel (left) — with syntax highlighting (D-09)
+                let editor_focused = self.focused_pane == FocusedPane::Editor;
+                let editor_title = self.editor_title(editor_focused);
+                let editor_inner =
+                    self.render_panel(frame, editor_outer, editor_title, editor_focused, false);
+                self.editor_area = Some(editor_inner);
                 self.editor
-                    .render_highlighted(frame, chunks[0], &search_query);
+                    .render_highlighted(frame, editor_inner, &search_query);
 
-                // Divider (D-11: subtle dimmed vertical line)
-                let divider_lines: Vec<ratatui::text::Line> = (0..chunks[1].height)
-                    .map(|_| {
-                        ratatui::text::Line::from(Span::styled(
-                            "\u{2502}",
-                            Style::default().fg(self.theme.divider_fg),
-                        ))
-                    })
-                    .collect();
-                frame.render_widget(Paragraph::new(divider_lines), chunks[1]);
+                // Preview panel (right) — carries the title-bar buttons
+                let preview_title = self.preview_title(!editor_focused);
+                let preview_inner =
+                    self.render_panel(frame, preview_outer, preview_title, !editor_focused, true);
+                self.preview_area = Some(preview_inner);
 
-                let preview_metrics = PreviewMetrics::for_text(&self.preview_text, chunks[2].width);
+                self.refresh_preview(preview_inner.width);
 
-                // Scroll sync: preview follows editor cursor (D-03)
-                self.sync_preview_scroll(chunks[2].height, &preview_metrics);
+                // Scroll sync: preview follows editor cursor (D-03) — paused
+                // while the preview itself has focus so manual scrolling sticks
+                if editor_focused {
+                    self.sync_preview_scroll(preview_inner.height);
+                }
 
-                // Compute highlight line for sync indicator
-                let highlight = if self.config.sync_indicator {
+                let highlight = self.config.sync_indicator.then(|| {
                     let (cursor_row, _) = self.editor.cursor_position();
-                    if !self.source_to_preview.is_empty()
-                        && cursor_row < self.source_to_preview.len()
-                    {
-                        Some(
-                            preview_metrics
-                                .visual_line_for_logical(self.source_to_preview[cursor_row]),
-                        )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                    self.preview_doc.rows_for_source(cursor_row)
+                });
 
-                // Preview right
                 self.preview.render(
                     frame,
-                    chunks[2],
-                    &self.preview_text,
+                    preview_inner,
+                    &self.preview_doc,
                     &self.theme,
-                    &preview_metrics,
                     highlight,
                 );
             }
             LayoutMode::EditorOnly => {
-                self.editor_area = Some(body_area);
+                self.split_body_area = None;
                 self.divider_area = None;
                 self.preview_area = None;
-                self.editor
-                    .render_highlighted(frame, body_area, &search_query);
+                let title = self.editor_title(true);
+                let inner = self.render_panel(frame, body_area, title, true, true);
+                self.editor_area = Some(inner);
+                self.editor.render_highlighted(frame, inner, &search_query);
             }
             LayoutMode::PreviewOnly => {
+                self.split_body_area = None;
                 self.editor_area = None;
                 self.divider_area = None;
-                self.preview_area = Some(body_area);
-                let preview_metrics = PreviewMetrics::for_text(&self.preview_text, body_area.width);
-                self.preview.render(
-                    frame,
-                    body_area,
-                    &self.preview_text,
-                    &self.theme,
-                    &preview_metrics,
-                    None,
-                );
+                let title = self.preview_title(true);
+                let inner = self.render_panel(frame, body_area, title, true, true);
+                self.preview_area = Some(inner);
+                self.refresh_preview(inner.width);
+                self.preview
+                    .render(frame, inner, &self.preview_doc, &self.theme, None);
             }
         }
 
         // Render status bar based on current mode
         match self.mode {
-            AppMode::Editing => {
+            AppMode::Editing | AppMode::Normal | AppMode::Insert | AppMode::Visual => {
+                let preview_focused = self.focused_pane == FocusedPane::Preview
+                    && self.layout_mode != LayoutMode::EditorOnly;
+                type Hints = &'static [(&'static str, &'static str)];
+                let (vim_mode, hints): (Option<(&str, ratatui::style::Color)>, Hints) =
+                    match self.mode {
+                        AppMode::Editing if preview_focused => {
+                            (None, &[("↑↓", "scroll"), ("Esc", "editor"), ("F1", "help")])
+                        }
+                        AppMode::Editing => (
+                            None,
+                            &[
+                                ("^S", "save"),
+                                ("^F", "find"),
+                                ("^P", "view"),
+                                ("F1", "help"),
+                                ("^Q", "quit"),
+                            ],
+                        ),
+                        AppMode::Normal if preview_focused => (
+                            Some(("-- NORMAL --", self.theme.mode_normal_bg)),
+                            &[("j/k", "scroll"), ("g/G", "top/end"), ("Esc", "editor")],
+                        ),
+                        AppMode::Normal => (
+                            Some(("-- NORMAL --", self.theme.mode_normal_bg)),
+                            &[
+                                ("i", "insert"),
+                                ("v", "visual"),
+                                ("/", "find"),
+                                (":w", "save"),
+                                ("F1", "help"),
+                            ],
+                        ),
+                        AppMode::Insert => (
+                            Some(("-- INSERT --", self.theme.mode_insert_bg)),
+                            &[("Esc", "normal"), ("F1", "help")],
+                        ),
+                        AppMode::Visual => (
+                            Some(("-- VISUAL --", self.theme.mode_visual_bg)),
+                            &[
+                                ("d", "delete"),
+                                ("y", "yank"),
+                                (">", "indent"),
+                                ("Esc", "normal"),
+                            ],
+                        ),
+                        _ => unreachable!(),
+                    };
                 self.status_bar.render(
                     frame,
                     status_area,
@@ -1730,49 +2012,8 @@ impl<'a> App<'a> {
                         filename: self.editor.display_name(),
                         cursor: self.editor.cursor_position(),
                         modified: self.editor.is_modified(),
-                        vim_mode: None,
-                    },
-                );
-            }
-            AppMode::Normal => {
-                let mode_info = Some(("-- NORMAL --", self.theme.mode_normal_bg));
-                self.status_bar.render(
-                    frame,
-                    status_area,
-                    &self.theme,
-                    StatusBarContent {
-                        filename: self.editor.display_name(),
-                        cursor: self.editor.cursor_position(),
-                        modified: self.editor.is_modified(),
-                        vim_mode: mode_info,
-                    },
-                );
-            }
-            AppMode::Insert => {
-                let mode_info = Some(("-- INSERT --", self.theme.mode_insert_bg));
-                self.status_bar.render(
-                    frame,
-                    status_area,
-                    &self.theme,
-                    StatusBarContent {
-                        filename: self.editor.display_name(),
-                        cursor: self.editor.cursor_position(),
-                        modified: self.editor.is_modified(),
-                        vim_mode: mode_info,
-                    },
-                );
-            }
-            AppMode::Visual => {
-                let mode_info = Some(("-- VISUAL --", self.theme.mode_visual_bg));
-                self.status_bar.render(
-                    frame,
-                    status_area,
-                    &self.theme,
-                    StatusBarContent {
-                        filename: self.editor.display_name(),
-                        cursor: self.editor.cursor_position(),
-                        modified: self.editor.is_modified(),
-                        vim_mode: mode_info,
+                        vim_mode,
+                        hints,
                     },
                 );
             }
@@ -1841,11 +2082,233 @@ impl<'a> App<'a> {
         if self.mode == AppMode::Settings {
             self.render_settings_overlay(frame, body_area);
         }
+
+        // Help overlay (topmost)
+        if self.show_help {
+            self.render_help_overlay(frame, body_area);
+        }
+    }
+
+    /// Render a rounded btop-style panel border with an embedded title and
+    /// return the inner content area. When `with_buttons` is set, the
+    /// clickable title-bar buttons are drawn over the top border.
+    fn render_panel(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        title: ratatui::text::Line<'static>,
+        focused: bool,
+        with_buttons: bool,
+    ) -> Rect {
+        use ratatui::widgets::{Block, BorderType};
+
+        let border_color = if focused {
+            self.theme.preview_accent_primary
+        } else {
+            self.theme.divider_fg
+        };
+        let title_width = title.width() as u16;
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(border_color))
+            .title_top(title);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if with_buttons {
+            // Buttons stop short of the title so they never chop it mid-word
+            let min_x = area.x + 1 + title_width + 1;
+            self.render_title_buttons(frame, area, min_x);
+        }
+        inner
+    }
+
+    /// Editor panel title: ` filename + ` with the modified marker.
+    fn editor_title(&self, focused: bool) -> ratatui::text::Line<'static> {
+        let color = if focused {
+            self.theme.preview_accent_primary
+        } else {
+            self.theme.divider_fg
+        };
+        let modified = if self.editor.is_modified() { " +" } else { "" };
+        ratatui::text::Line::from(Span::styled(
+            format!(" {}{} ", self.editor.display_name(), modified),
+            Style::default()
+                .fg(color)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ))
+    }
+
+    /// Preview panel title: ` preview · profile `.
+    fn preview_title(&self, focused: bool) -> ratatui::text::Line<'static> {
+        let color = if focused {
+            self.theme.preview_accent_primary
+        } else {
+            self.theme.divider_fg
+        };
+        ratatui::text::Line::from(Span::styled(
+            format!(" preview \u{00B7} {} ", self.config.render_profile.name()),
+            Style::default()
+                .fg(color)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ))
+    }
+
+    /// Draw btop-style `┤ key label ├` buttons over a panel's top border,
+    /// right-aligned, and record their hit areas for mouse handling.
+    /// Buttons that don't fit to the right of `min_x` are dropped
+    /// (rightmost kept).
+    fn render_title_buttons(&mut self, frame: &mut Frame, panel: Rect, min_x: u16) {
+        if panel.height == 0 || panel.width < 4 {
+            return;
+        }
+        // Laid out right-to-left; later entries are dropped first when space
+        // is tight, so help and quit survive the longest.
+        let buttons: [(UiButton, &str, &str); 4] = [
+            (UiButton::Quit, "^Q", "quit"),
+            (UiButton::Help, "F1", "help"),
+            (UiButton::Settings, "F2", "set"),
+            (UiButton::View, "^P", "view"),
+        ];
+        let key_style = Style::default()
+            .fg(self.theme.preview_accent_primary)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let label_style = Style::default().fg(self.theme.status_bar_fg);
+        let tee_style = Style::default().fg(self.theme.divider_fg);
+
+        // Lay out right-to-left, leaving the corner glyph intact.
+        let mut right_edge = panel.x + panel.width - 2;
+        for (button, key, label) in buttons {
+            // "┤" + key + " " + label + "├"
+            let width = (1 + key.len() + 1 + label.len() + 1) as u16;
+            if right_edge < min_x.max(panel.x + 2) + width {
+                break;
+            }
+            let x = right_edge - width;
+            let rect = Rect::new(x, panel.y, width, 1);
+            let line = ratatui::text::Line::from(vec![
+                Span::styled("\u{2524}", tee_style),
+                Span::styled(key.to_string(), key_style),
+                Span::styled(format!(" {}", label), label_style),
+                Span::styled("\u{251C}", tee_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), rect);
+            self.button_areas.push((rect, button));
+            right_edge = x.saturating_sub(1);
+        }
+    }
+
+    /// Render the keybindings help overlay (btop-style menu box).
+    fn render_help_overlay(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::{Block, BorderType, Clear};
+
+        let is_vim = self.vim_handler.is_some();
+        let key_rows: &[(&str, &str)] = if is_vim {
+            &[
+                ("h j k l", "move cursor"),
+                ("w b e", "word motions"),
+                ("0 $  gg G", "line / file start and end"),
+                ("i a o O", "enter insert mode"),
+                ("v V", "visual / visual line"),
+                ("d c y +motion", "delete / change / yank"),
+                ("dd yy cc", "line delete / yank / change"),
+                ("p P", "paste after / before"),
+                ("x r J", "delete char / replace / join"),
+                ("u ^R", "undo / redo"),
+                ("/ n N", "search / next / previous"),
+                (":w :q :wq", "save / quit / save+quit"),
+                (":set", "settings panel"),
+                ("^P  F2  ^Q", "cycle view / settings / quit"),
+            ]
+        } else {
+            &[
+                ("^S  ^Q", "save / quit"),
+                ("^F", "find"),
+                ("^C  ^V", "copy / paste"),
+                ("^Z  ^Y", "undo / redo"),
+                ("Tab  S-Tab", "indent / outdent"),
+                ("Shift+arrows", "select text"),
+                ("^P  F2", "cycle view / settings"),
+            ]
+        };
+        let mouse_rows: &[(&str, &str)] = &[
+            ("click", "focus pane / place cursor"),
+            ("wheel", "scroll pane under cursor"),
+            ("drag", "select text / resize split"),
+            ("j k g G ↑↓", "scroll preview when focused"),
+        ];
+
+        let popup_w = 56u16.min(area.width);
+        let popup_h = ((key_rows.len() + mouse_rows.len()) as u16 + 4).min(area.height);
+        if popup_w < 10 || popup_h < 3 {
+            return;
+        }
+        let x = area.x + area.width.saturating_sub(popup_w) / 2;
+        let y = area.y + area.height.saturating_sub(popup_h) / 2;
+        let popup_area = Rect::new(x, y, popup_w, popup_h);
+
+        frame.render_widget(Clear, popup_area);
+
+        let accent = self.theme.preview_accent_primary;
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(accent))
+            .title_top(ratatui::text::Line::from(Span::styled(
+                " help ",
+                Style::default()
+                    .fg(accent)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )))
+            .title_bottom(
+                ratatui::text::Line::from(Span::styled(
+                    " Esc close ",
+                    Style::default().fg(self.theme.divider_fg),
+                ))
+                .right_aligned(),
+            )
+            .style(Style::default().bg(self.theme.status_bar_bg));
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let key_style = Style::default()
+            .fg(accent)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+        let desc_style = Style::default().fg(self.theme.status_bar_fg);
+        let section_style = Style::default()
+            .fg(self.theme.status_bar_fg)
+            .add_modifier(ratatui::style::Modifier::BOLD);
+
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        lines.push(ratatui::text::Line::from(Span::styled(
+            if is_vim {
+                " keys (vim)"
+            } else {
+                " keys (nano)"
+            },
+            section_style,
+        )));
+        for (key, desc) in key_rows {
+            lines.push(ratatui::text::Line::from(vec![
+                Span::styled(format!("  {:>14}  ", key), key_style),
+                Span::styled(*desc, desc_style),
+            ]));
+        }
+        lines.push(ratatui::text::Line::from(Span::styled(
+            " mouse & panes",
+            section_style,
+        )));
+        for (key, desc) in mouse_rows {
+            lines.push(ratatui::text::Line::from(vec![
+                Span::styled(format!("  {:>14}  ", key), key_style),
+                Span::styled(*desc, desc_style),
+            ]));
+        }
+        lines.truncate(inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     /// Render the settings overlay panel centered on screen.
     fn render_settings_overlay(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::widgets::{Block, Borders, Clear};
+        use ratatui::widgets::{Block, BorderType, Borders, Clear};
 
         let themes = self.theme_names();
         let modes = ["vim", "nano"];
@@ -1863,11 +2326,12 @@ impl<'a> App<'a> {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.divider_fg))
-            .title(" Settings ")
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.theme.preview_accent_primary))
+            .title(" settings ")
             .title_style(
                 Style::default()
-                    .fg(self.theme.status_bar_fg)
+                    .fg(self.theme.preview_accent_primary)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             )
             .style(Style::default().bg(self.theme.status_bar_bg));
@@ -2109,11 +2573,11 @@ impl<'a> App<'a> {
                         // Reset to defaults
                         self.settings_theme_index = 0; // ocean
                         self.settings_mode_index = 0; // vim
-                        self.settings_profile_index = 0; // github
+                        self.settings_profile_index = 0; // clean
                         self.apply_settings_theme("ocean");
                         self.config.mode = crate::config::EditingMode::Vim;
                         self.config.theme = "ocean".to_string();
-                        self.config.render_profile = crate::config::RenderProfile::Github;
+                        self.config.render_profile = crate::config::RenderProfile::default();
                         self.config.sync_indicator = true;
                         self.config.word_wrap = false;
                         self.editor.word_wrap = false;
@@ -2173,7 +2637,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, LayoutMode};
+    use super::{App, FocusedPane, LayoutMode, UiButton};
     use crate::clipboard::ClipboardProvider;
     use crate::config::{Config, EditingMode};
     use crate::markdown::MarkdownRenderer;
@@ -2254,11 +2718,12 @@ mod tests {
     #[test]
     fn split_render_handles_zero_width_panes() {
         let mut app = test_app("# mdedit\n\nA tiny render test.");
-        let rendered =
-            app.renderer
-                .render(&app.editor.content(), app.config.render_profile, &app.theme);
-        app.preview_text = rendered.text;
-        app.source_to_preview = rendered.source_to_preview;
+        app.preview_doc = app.renderer.render(
+            &app.editor.content(),
+            app.config.render_profile,
+            &app.theme,
+            1,
+        );
         app.content_dirty = false;
         app.layout_mode = LayoutMode::Split;
 
@@ -2270,11 +2735,124 @@ mod tests {
             .expect("render should not panic on zero-width panes");
     }
 
+    fn click(app: &mut App<'static>, column: u16, row: u16) {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        app.handle_mouse_event(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn title_buttons_are_registered_and_help_button_opens_overlay() {
+        let mut app = test_app("# hi");
+        let backend = TestBackend::new(160, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+
+        assert_eq!(
+            app.button_areas.len(),
+            4,
+            "all four buttons fit at 160 cols"
+        );
+
+        let (rect, _) = *app
+            .button_areas
+            .iter()
+            .find(|(_, b)| *b == UiButton::Help)
+            .expect("help button registered");
+        click(&mut app, rect.x, rect.y);
+        assert!(app.show_help, "clicking the help button opens the overlay");
+
+        // Any further click dismisses it
+        click(&mut app, 5, 5);
+        assert!(!app.show_help, "clicking anywhere closes the overlay");
+
+        // Buttons render in every layout mode; help/quit survive narrowing
+        for _ in 0..3 {
+            app.cycle_layout();
+            terminal.draw(|frame| app.render(frame)).expect("render");
+            assert!(
+                app.button_areas
+                    .iter()
+                    .any(|(_, b)| *b == UiButton::Help || *b == UiButton::Quit),
+                "help/quit buttons survive in layout {:?}",
+                app.layout_mode
+            );
+        }
+    }
+
+    #[test]
+    fn help_overlay_renders_across_terminal_sizes() {
+        let mut app = test_app("# hi");
+        app.show_help = true;
+        for (w, h) in [(5u16, 3u16), (40, 12), (120, 40)] {
+            let backend = TestBackend::new(w, h);
+            let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+            terminal
+                .draw(|frame| app.render(frame))
+                .expect("help overlay render should not panic");
+        }
+    }
+
+    #[test]
+    fn help_overlay_shows_keybindings_for_active_mode() {
+        let mut app = test_app("# hi"); // nano-mode test app
+        app.show_help = true;
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut screen = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                screen.push_str(buffer[(x, y)].symbol());
+            }
+            screen.push('\n');
+        }
+        println!("{screen}");
+
+        assert!(screen.contains(" help "), "overlay title present");
+        assert!(screen.contains("keys (nano)"), "nano key section present");
+        assert!(screen.contains("indent / outdent"), "nano rows present");
+        assert!(screen.contains("mouse & panes"), "mouse section present");
+        assert!(screen.contains("Esc close"), "close hint present");
+    }
+
+    #[test]
+    fn clicking_preview_focuses_it_and_manual_scroll_persists() {
+        // Blank-line separated paragraphs so the preview is taller than the pane
+        let content = "paragraph\n\n".repeat(200);
+        let mut app = test_app(&content);
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+
+        let preview = app.preview_area.expect("split layout has a preview pane");
+        click(&mut app, preview.x + 1, preview.y + 1);
+        assert_eq!(app.focused_pane, FocusedPane::Preview);
+
+        // With the preview focused, cursor scroll-sync is paused, so a manual
+        // scroll survives the next frame.
+        app.preview.scroll_down(5);
+        terminal.draw(|frame| app.render(frame)).expect("render");
+        assert_eq!(app.preview.scroll_offset(), 5);
+
+        // Clicking back into the editor refocuses it
+        let editor = app.editor_area.expect("split layout has an editor pane");
+        click(&mut app, editor.x + 1, editor.y + 1);
+        assert_eq!(app.focused_pane, FocusedPane::Editor);
+    }
+
     #[test]
     fn readme_preview_update_and_split_render_survive_terminal_size_matrix() {
         let mut app = test_app(include_str!("../README.md"));
         app.last_edit_time = Some(Instant::now() - Duration::from_millis(100));
-        app.maybe_update_preview();
+        app.refresh_preview(80);
         app.layout_mode = LayoutMode::Split;
 
         for width in 1..=140 {

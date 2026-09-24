@@ -1,118 +1,171 @@
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::highlighting::{
+    FontStyle, HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet,
+};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 
-/// Markdown-aware syntax highlighter using syntect with a configurable theme.
+/// Process-wide syntect syntax definitions. Deserializing these is the most
+/// expensive part of syntect setup, so it happens once and is shared by the
+/// editor highlighter and the preview's code-block highlighting.
+pub fn syntax_set() -> &'static SyntaxSet {
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// Process-wide bundled syntect themes (see [`syntax_set`]).
+pub fn theme_set() -> &'static ThemeSet {
+    static SET: OnceLock<ThemeSet> = OnceLock::new();
+    SET.get_or_init(ThemeSet::load_defaults)
+}
+
+/// Look up a bundled syntect theme, falling back to base16-ocean.dark.
+pub fn syntect_theme(name: &str) -> &'static Theme {
+    let themes = &theme_set().themes;
+    themes
+        .get(name)
+        .or_else(|| themes.get("base16-ocean.dark"))
+        .expect("bundled syntect theme missing")
+}
+
+/// One highlighted source line plus the parser state needed to resume
+/// highlighting at the following line.
+struct CachedLine {
+    source: String,
+    line: Line<'static>,
+    parse_state: ParseState,
+    highlight_state: HighlightState,
+}
+
+/// Maximum time one frame may spend extending the highlight cache. Lines the
+/// budget doesn't reach are drawn unstyled and filled in on following frames.
+const FRAME_BUDGET: Duration = Duration::from_millis(12);
+
+/// Markdown-aware syntax highlighter for the editor pane.
 ///
-/// Converts raw markdown text into syntax-highlighted ratatui `Line`s suitable for
-/// rendering in a `Paragraph` widget. Highlights headings, bold/italic markers,
-/// code fences, link syntax, and list markers with subtle, readable colors (D-09, D-10).
+/// Highlighting is incremental: the parser state after every line is cached,
+/// so a frame only highlights the lines that changed since the last frame
+/// (plus any newly scrolled-into-view lines) instead of the whole document.
+/// The cache is validated against the current buffer on every call, so any
+/// edit — including inserted/deleted lines — invalidates from the first
+/// changed line onward. Syntect state flows top-down, so jumping deep into a
+/// large, never-highlighted file needs every line above it parsed first; that
+/// work is time-sliced across frames (see [`FRAME_BUDGET`]).
 pub struct MarkdownHighlighter {
-    syntax_set: SyntaxSet,
-    theme: Theme,
+    theme: &'static Theme,
+    cache: Vec<CachedLine>,
+    /// Whether the last call ran out of budget before reaching its range.
+    pending: bool,
 }
 
 impl MarkdownHighlighter {
     pub fn new(syntect_theme_name: &str) -> Self {
-        let ss = SyntaxSet::load_defaults_newlines();
-        let ts = ThemeSet::load_defaults();
-        let theme = match ts.themes.get(syntect_theme_name) {
-            Some(t) => t.clone(),
-            None => {
-                eprintln!(
-                    "Warning: syntect theme '{}' not found, falling back to base16-ocean.dark",
-                    syntect_theme_name
-                );
-                ts.themes["base16-ocean.dark"].clone()
-            }
-        };
         MarkdownHighlighter {
-            syntax_set: ss,
-            theme,
+            theme: syntect_theme(syntect_theme_name),
+            cache: Vec::new(),
+            pending: false,
         }
     }
 
-    /// Highlight markdown text, returning styled Lines.
-    /// Each input line becomes one output Line with per-token coloring.
-    #[allow(dead_code)]
-    pub fn highlight_lines(&self, text: &str) -> Vec<Line<'static>> {
-        let syntax = self
-            .syntax_set
-            .find_syntax_by_extension("md")
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+    /// True when the last `highlight_range` left visible lines unstyled and
+    /// needs another frame to finish.
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
 
-        let mut h = HighlightLines::new(syntax, &self.theme);
+    /// Return highlighted Lines for `lines[start_row..end_row]`.
+    pub fn highlight_range(
+        &mut self,
+        lines: &[String],
+        start_row: usize,
+        end_row: usize,
+    ) -> Vec<Line<'static>> {
+        let end_row = end_row.min(lines.len());
+        if start_row >= end_row {
+            return Vec::new();
+        }
 
-        text.lines()
-            .map(|line| {
-                let line_with_nl = format!("{}\n", line);
-                let ranges = h
-                    .highlight_line(&line_with_nl, &self.syntax_set)
-                    .unwrap_or_default();
-                let spans = syntect_ranges_to_spans(&ranges);
-                Line::from(spans)
+        // Validate the cached prefix against the buffer. Syntect state flows
+        // top-down, so the first mismatch invalidates everything after it.
+        let check_end = end_row.min(self.cache.len());
+        if let Some(first_changed) = (0..check_end).find(|&i| self.cache[i].source != lines[i]) {
+            self.cache.truncate(first_changed);
+        }
+
+        if self.cache.len() < end_row {
+            self.extend_cache(lines, end_row, Instant::now() + FRAME_BUDGET);
+        }
+        self.pending = self.cache.len() < end_row;
+
+        (start_row..end_row)
+            .map(|i| match self.cache.get(i) {
+                Some(c) => c.line.clone(),
+                None => Line::from(lines[i].replace('\t', " ")),
             })
             .collect()
     }
 
-    /// Highlight a subset of lines (by index range) for efficient rendering.
-    /// Returns highlighted Lines for lines[start_row..end_row].
-    /// All lines up to end_row are parsed for correct syntect state tracking.
-    pub fn highlight_range(
-        &self,
-        text: &str,
-        start_row: usize,
-        end_row: usize,
-    ) -> Vec<Line<'static>> {
-        let syntax = self
-            .syntax_set
-            .find_syntax_by_extension("md")
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+    fn extend_cache(&mut self, lines: &[String], end_row: usize, deadline: Instant) {
+        let ss = syntax_set();
+        let highlighter = Highlighter::new(self.theme);
+        let (mut parse_state, mut highlight_state) = match self.cache.last() {
+            Some(c) => (c.parse_state.clone(), c.highlight_state.clone()),
+            None => {
+                let syntax = ss
+                    .find_syntax_by_extension("md")
+                    .unwrap_or_else(|| ss.find_syntax_plain_text());
+                (
+                    ParseState::new(syntax),
+                    HighlightState::new(&highlighter, ScopeStack::new()),
+                )
+            }
+        };
 
-        let mut h = HighlightLines::new(syntax, &self.theme);
-
-        text.lines()
-            .enumerate()
-            .filter_map(|(i, line)| {
-                let line_with_nl = format!("{}\n", line);
-                let ranges = h
-                    .highlight_line(&line_with_nl, &self.syntax_set)
-                    .unwrap_or_default();
-
-                if i >= start_row && i < end_row {
-                    let spans = syntect_ranges_to_spans(&ranges);
-                    Some(Line::from(spans))
-                } else {
-                    // Process for state tracking, but discard the output.
-                    None
-                }
-            })
-            .collect()
+        let mut line_buf = String::new();
+        let first = self.cache.len();
+        for (n, source) in lines[first..end_row].iter().enumerate() {
+            if n % 64 == 63 && Instant::now() >= deadline {
+                break;
+            }
+            line_buf.clear();
+            line_buf.push_str(source);
+            line_buf.push('\n');
+            let ops = parse_state.parse_line(&line_buf, ss).unwrap_or_default();
+            let ranges: Vec<_> =
+                HighlightIterator::new(&mut highlight_state, &ops, &line_buf, &highlighter)
+                    .collect();
+            self.cache.push(CachedLine {
+                source: source.clone(),
+                line: Line::from(syntect_ranges_to_spans(&ranges)),
+                parse_state: parse_state.clone(),
+                highlight_state: highlight_state.clone(),
+            });
+        }
     }
 }
 
 /// Convert syntect highlight ranges to ratatui Spans.
 /// Manual conversion to avoid ratatui version mismatch with syntect-tui.
-fn syntect_ranges_to_spans(
-    ranges: &[(syntect::highlighting::Style, &str)],
-) -> Vec<Span<'static>> {
+/// Tabs become single spaces so the rendered text keeps the same byte offsets
+/// (selection/search overlays are byte-based) and a predictable cell width.
+fn syntect_ranges_to_spans(ranges: &[(syntect::highlighting::Style, &str)]) -> Vec<Span<'static>> {
     ranges
         .iter()
         .filter_map(|(style, text)| {
-            let content = text.trim_end_matches('\n').to_string();
+            let content = text.trim_end_matches('\n').replace('\t', " ");
             if content.is_empty() {
                 return None;
             }
-            let ratatui_style = convert_syntect_style(style);
-            Some(Span::styled(content, ratatui_style))
+            Some(Span::styled(content, convert_syntect_style(style)))
         })
         .collect()
 }
 
 /// Convert a syntect Style to a ratatui Style (manual, no syntect-tui dependency).
-fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
+pub fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
     let mut ratatui_style = Style::default();
 
     // Foreground color (skip if alpha is 0 = transparent)
@@ -124,11 +177,9 @@ fn convert_syntect_style(style: &syntect::highlighting::Style) -> Style {
         ));
     }
 
-    // Background: skip to use terminal default (D-10: keep it subtle)
-    // Only apply background for non-transparent, non-theme-default backgrounds
-    // Theme backgrounds tend to clash with terminal backgrounds, so we skip them.
+    // Background: skip to use terminal default (D-10: keep it subtle).
+    // Theme backgrounds tend to clash with terminal backgrounds.
 
-    // Font style modifiers
     if style.font_style.contains(FontStyle::BOLD) {
         ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
     }
@@ -166,4 +217,34 @@ fn digit_count(n: usize) -> usize {
         val /= 10;
     }
     count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MarkdownHighlighter;
+
+    fn text_of(line: &ratatui::text::Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn incremental_cache_matches_fresh_highlight_after_edits() {
+        let mut lines: Vec<String> = "# Title\n\n```rust\nfn main() {}\n```\n\n*em* text"
+            .lines()
+            .map(String::from)
+            .collect();
+        let mut cached = MarkdownHighlighter::new("base16-ocean.dark");
+        let _ = cached.highlight_range(&lines, 0, lines.len());
+
+        // Edit that changes multi-line state: close the fence earlier.
+        lines.insert(3, "```".to_string());
+        lines[0] = "## Title".to_string();
+        let incremental = cached.highlight_range(&lines, 0, lines.len());
+        let fresh =
+            MarkdownHighlighter::new("base16-ocean.dark").highlight_range(&lines, 0, lines.len());
+        assert_eq!(incremental, fresh);
+        for (line, src) in incremental.iter().zip(&lines) {
+            assert_eq!(&text_of(line), src);
+        }
+    }
 }

@@ -1,61 +1,18 @@
-use ratatui::buffer::Buffer;
+use std::ops::Range;
+
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use crate::markdown::RenderResult;
 use crate::theme::Theme;
 
-pub struct PreviewMetrics {
-    logical_line_starts: Vec<u16>,
-    total_visual_lines: u16,
-}
-
-impl PreviewMetrics {
-    /// Compute the visual (post-wrap) row index where each logical line begins.
-    ///
-    /// We delegate to ratatui's `Paragraph::line_count`, which uses the same
-    /// `WordWrapper` implementation Paragraph uses when actually rendering.
-    /// This guarantees the indicator's computed row matches the row where the
-    /// content visually appears (Pitfall: a hand-rolled wrap counter previously
-    /// drifted from ratatui's, putting the sync indicator on the wrong line).
-    pub fn for_text(text: &Text, width: u16) -> Self {
-        if width == 0 {
-            return Self {
-                logical_line_starts: Vec::new(),
-                total_visual_lines: 0,
-            };
-        }
-
-        let mut logical_line_starts = Vec::with_capacity(text.lines.len());
-        let mut visual_line: usize = 0;
-
-        for line in &text.lines {
-            logical_line_starts.push(saturating_u16(visual_line));
-            visual_line += visual_lines_for(line, text.style, width);
-        }
-
-        Self {
-            logical_line_starts,
-            total_visual_lines: saturating_u16(visual_line),
-        }
-    }
-
-    pub fn total_visual_lines(&self) -> u16 {
-        self.total_visual_lines
-    }
-
-    pub fn visual_line_for_logical(&self, logical_line: usize) -> u16 {
-        self.logical_line_starts
-            .get(logical_line)
-            .copied()
-            .unwrap_or_else(|| self.total_visual_lines.saturating_sub(1))
-    }
-}
-
+/// Scrollable view over a pre-laid-out [`RenderResult`].
+///
+/// Rows arrive already wrapped to the pane width, so drawing is a direct copy
+/// of the visible slice — O(visible rows), independent of document size.
 pub struct Preview {
-    scroll_offset: u16,
+    scroll_offset: usize,
 }
 
 impl Preview {
@@ -64,184 +21,83 @@ impl Preview {
     }
 
     pub fn scroll_up(&mut self, lines: u16) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.scroll_offset = self.scroll_offset.saturating_sub(usize::from(lines));
     }
 
     pub fn scroll_down(&mut self, lines: u16) {
-        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.scroll_offset = self.scroll_offset.saturating_add(usize::from(lines));
     }
 
-    #[allow(dead_code)]
-    pub fn reset_scroll(&mut self) {
-        self.scroll_offset = 0;
-    }
-
-    /// Set the scroll offset programmatically (used by scroll sync).
-    pub fn set_scroll(&mut self, offset: u16) {
+    /// Set the scroll offset programmatically (scroll sync, Home/End).
+    /// Values past the end are clamped on the next render.
+    pub fn set_scroll(&mut self, offset: usize) {
         self.scroll_offset = offset;
     }
 
-    /// Render the preview text into the given area.
-    /// Clamps scroll offset to prevent blank screen (Pitfall 6).
-    /// If `highlight_line` is Some, draws a subtle indicator at that preview line.
+    /// Current scroll offset (rows from the top).
+    #[allow(dead_code)]
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Render the visible rows into `area`.
+    ///
+    /// Clamps the scroll offset so the last page stays full (Pitfall 6); the
+    /// clamp is persisted so a jump past the end (e.g. `G`) lands exactly on
+    /// the last page and subsequent scroll-ups step back from there.
+    /// `highlight` tints the rows of the source line under the editor cursor.
     pub fn render(
-        &self,
+        &mut self,
         frame: &mut Frame,
         area: Rect,
-        text: &Text,
+        doc: &RenderResult,
         theme: &Theme,
-        metrics: &PreviewMetrics,
-        highlight_line: Option<u16>,
+        highlight: Option<Range<usize>>,
     ) {
         if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let visible = area.height;
-        let max_scroll = metrics.total_visual_lines().saturating_sub(visible);
-        let clamped_offset = self.scroll_offset.min(max_scroll);
+        let visible = usize::from(area.height);
+        let max_scroll = doc.rows.len().saturating_sub(visible);
+        self.scroll_offset = self.scroll_offset.min(max_scroll);
+        let top = self.scroll_offset;
 
-        let widget = Paragraph::new(text.clone())
-            .style(Style::default().fg(theme.preview_fg))
-            .scroll((clamped_offset, 0))
-            .wrap(Wrap { trim: false });
-
-        frame.render_widget(widget, area);
-
-        // Draw sync indicator line
-        if let Some(target) = highlight_line {
-            if target >= clamped_offset && target < clamped_offset + visible {
-                let y = area.y + (target - clamped_offset);
-                let buf = frame.buffer_mut();
-                draw_indicator(buf, area.x, y, area.width, theme);
-            }
+        let buf = frame.buffer_mut();
+        buf.set_style(area, Style::default().fg(theme.preview_fg));
+        for (i, line) in doc.rows.iter().skip(top).take(visible).enumerate() {
+            buf.set_line(area.x, area.y + i as u16, line, area.width);
         }
-    }
-}
 
-/// How many visual rows a single logical Line occupies when rendered with
-/// `Wrap { trim: false }` at the given width. Uses ratatui's own
-/// `Paragraph::line_count` so the result matches Paragraph's actual rendering.
-fn visual_lines_for(line: &Line, base_style: Style, width: u16) -> usize {
-    if width == 0 {
-        return 0;
-    }
-    // line_count counts wrapped rows for the entire text. Empty lines still
-    // occupy 1 row, matching how Paragraph renders blank logical lines.
-    Paragraph::new(Text {
-        lines: vec![line.clone()],
-        style: base_style,
-        alignment: None,
-    })
-    .wrap(Wrap { trim: false })
-    .line_count(width)
-    .max(1)
-}
-
-fn saturating_u16(value: usize) -> u16 {
-    u16::try_from(value).unwrap_or(u16::MAX)
-}
-
-/// Draw a subtle indicator on the synced preview line.
-/// Tints the whole row's background without overwriting any glyphs — an earlier
-/// version stamped a block char at the left edge, which destroyed the first
-/// character of the synced line (e.g. "PROJECT" rendered as "▏ROJECT").
-fn draw_indicator(buf: &mut Buffer, x: u16, y: u16, width: u16, theme: &Theme) {
-    if width == 0 {
-        return;
-    }
-
-    // Subtle background tint across the whole line
-    for col in x..x + width {
-        if let Some(cell) = buf.cell_mut((col, y)) {
-            cell.set_bg(theme.preview_indicator_bg);
+        if let Some(rows) = highlight {
+            let start = rows.start.max(top);
+            let end = rows.end.min(top + visible);
+            for row in start..end {
+                let y = area.y + (row - top) as u16;
+                // Tint the background only — never overwrite glyphs (an earlier
+                // left-edge marker destroyed the first character of the line).
+                buf.set_style(
+                    Rect::new(area.x, y, area.width, 1),
+                    Style::default().bg(theme.preview_indicator_bg),
+                );
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::PreviewMetrics;
+    use super::Preview;
     use crate::config::RenderProfile;
-    use crate::markdown::{MarkdownRenderer, TuiMarkdownRenderer};
+    use crate::markdown::{MarkdownRenderer, PreviewRenderer};
     use crate::theme::Theme;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::text::{Line, Text};
-    use ratatui::widgets::{Paragraph, Widget, Wrap};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
+    /// The row the preview reports for a source line must be exactly the
+    /// screen row where that content is drawn, at every width.
     #[test]
-    fn preview_metrics_track_wrapped_visual_lines() {
-        let text = Text::from(vec![
-            Line::from("ab"),
-            Line::from("abcdefghi"),
-            Line::from(""),
-        ]);
-
-        let metrics = PreviewMetrics::for_text(&text, 4);
-
-        assert_eq!(metrics.visual_line_for_logical(0), 0);
-        assert_eq!(metrics.visual_line_for_logical(1), 1);
-        assert_eq!(metrics.visual_line_for_logical(2), 4);
-        assert_eq!(metrics.total_visual_lines(), 5);
-    }
-
-    #[test]
-    fn preview_metrics_match_actual_wrapped_heading_row() {
-        let markdown = "\
-# Intro
-
-BookSmith takes a story and turns it into an illustrated, publish-ready book.
-
-1. **Input a story** -- paste text, upload a file (TXT, PDF, DOCX), or describe a concept and let AI generate one
-2. **Characters are identified automatically** -- AI scans the story, extracts characters, and presents them for review
-3. **Define character appearances** -- for each character, upload a reference image, describe them, or let AI generate a look. The user can edit/override at any point.
-4. **AI generates page illustrations** -- each page gets an illustration where characters are rendered consistently using their reference images, adapted to the scene context
-5. **Review and edit** -- flip through the book, regenerate pages you don't like, adjust text/layout
-6. **Export** -- download as:
-   - Barnes & Noble Press PDF (their spec)
-   - Amazon KDP PDF (their spec)
-   - Generic print-ready PDF
-   - Digital audiobook (AI-narrated)
-
-## Core Design Principles
-
-### Character consistency is the hard problem
-";
-
-        let renderer = TuiMarkdownRenderer;
-        let result = renderer.render(markdown, RenderProfile::Github, &Theme::ocean());
-        let width = 40;
-        let metrics = PreviewMetrics::for_text(&result.text, width);
-
-        let source_line = markdown
-            .lines()
-            .position(|line| line == "## Core Design Principles")
-            .expect("heading should be present in source");
-        let mapped_visual_row =
-            metrics.visual_line_for_logical(result.source_to_preview[source_line]);
-
-        let area = Rect::new(0, 0, width, 200);
-        let mut buffer = Buffer::empty(area);
-        Paragraph::new(result.text.clone())
-            .wrap(Wrap { trim: false })
-            .render(area, &mut buffer);
-
-        let actual_visual_row = (0..area.height as usize)
-            .find(|&row| row_contains(&buffer, area, row, "Core Design Principles"))
-            .expect("heading should be visible in rendered buffer")
-            as u16;
-
-        assert_eq!(mapped_visual_row, actual_visual_row);
-    }
-
-    /// Regression test for the preview-line-sync bug: the indicator landed on
-    /// a wrapped continuation line because the local wrap-count routine drifted
-    /// from ratatui's WordWrapper. Verify that for every logical line and every
-    /// reasonable preview width, the metric-computed visual row matches the row
-    /// where Paragraph actually renders that line.
-    #[test]
-    fn preview_metrics_match_paragraph_for_every_logical_line() {
+    fn mapped_rows_match_drawn_rows() {
         let markdown = "\
 # BookSmith
 
@@ -252,70 +108,58 @@ AI-powered book generation platform. Upload a story, define your characters, and
 Creating illustrated books today requires either:
 - **Expensive illustrators** -- $2K-$10K+ for a children's book
 - **Inconsistent AI tools** -- every image generation is a roll of the dice; characters look different on every page
-- **Manual layout work** -- hours in InDesign or similar tools to get print-ready output
 - **Limited export options** -- most tools don't produce files that meet publisher specs (B&N Press, Amazon KDP)
 
-There's no tool that takes a story, understands its characters, generates consistent illustrations, and outputs a publish-ready book in one workflow.
-
 ## Vision
-
-BookSmith takes a story and turns it into an illustrated, publish-ready book.
 ";
-
-        let renderer = TuiMarkdownRenderer;
-        let result = renderer.render(markdown, RenderProfile::Github, &Theme::ocean());
-
-        for &width in &[30u16, 40, 50, 60, 80, 100, 120] {
-            let metrics = PreviewMetrics::for_text(&result.text, width);
-
-            // For each logical line, render lines[0..i] followed by a unique marker.
-            // The row where the marker appears IS the visual row where lines[i] would start.
-            for i in 0..result.text.lines.len() {
-                let mut prefix: Vec<Line> = result.text.lines.iter().take(i).cloned().collect();
-                prefix.push(Line::from("\u{2603}MARKER\u{2603}"));
-                let prefix_text = Text::from(prefix);
-
-                let area = Rect::new(0, 0, width, 1000);
-                let mut buf = Buffer::empty(area);
-                Paragraph::new(prefix_text)
-                    .wrap(Wrap { trim: false })
-                    .render(area, &mut buf);
-
-                let marker_row = (0..area.height)
-                    .find(|&r| {
-                        let mut s = String::new();
-                        for c in 0..area.width {
-                            if let Some(cell) = buf.cell((c, r)) {
-                                s.push_str(cell.symbol());
-                            }
-                        }
-                        s.contains("\u{2603}MARKER\u{2603}")
+        let theme = Theme::ocean();
+        for width in [20u16, 30, 40, 60, 80, 120] {
+            let doc = PreviewRenderer.render(markdown, RenderProfile::Github, &theme, width);
+            let height = doc.rows.len() as u16;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut preview = Preview::new();
+            terminal
+                .draw(|f| preview.render(f, f.area(), &doc, &theme, None))
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            let drawn_row = |needle: &str| {
+                (0..height)
+                    .find(|&y| {
+                        let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                        row.contains(needle)
                     })
-                    .expect("marker should be rendered somewhere");
+                    .map(usize::from)
+            };
 
-                let metric_row = metrics.visual_line_for_logical(i);
+            for (src_prefix, needle) in [
+                ("## Problem", "Problem"),
+                ("## Vision", "Vision"),
+                ("- **Limited", "Limited"),
+                ("Creating", "Creating"),
+            ] {
+                let src = markdown
+                    .lines()
+                    .position(|l| l.starts_with(src_prefix))
+                    .unwrap();
                 assert_eq!(
-                    metric_row, marker_row,
-                    "width={} logical_line={} content={:?}",
-                    width,
-                    i,
-                    result.text.lines[i]
-                        .spans
-                        .iter()
-                        .map(|sp| sp.content.as_ref())
-                        .collect::<String>()
+                    doc.row_for_source(src),
+                    drawn_row(needle),
+                    "width {width}, source {src_prefix:?}"
                 );
             }
         }
     }
 
-    fn row_contains(buffer: &Buffer, area: Rect, row: usize, needle: &str) -> bool {
-        let mut rendered = String::new();
-        for col in 0..area.width as usize {
-            if let Some(cell) = buffer.cell((col as u16, row as u16)) {
-                rendered.push_str(cell.symbol());
-            }
-        }
-        rendered.contains(needle)
+    #[test]
+    fn scroll_is_clamped_to_last_page() {
+        let theme = Theme::ocean();
+        let doc = PreviewRenderer.render("a\n\nb\n\nc\n\nd\n", RenderProfile::Github, &theme, 10);
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        let mut preview = Preview::new();
+        preview.set_scroll(usize::MAX);
+        terminal
+            .draw(|f| preview.render(f, f.area(), &doc, &theme, None))
+            .unwrap();
+        assert_eq!(preview.scroll_offset(), doc.rows.len() - 3);
     }
 }

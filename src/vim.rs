@@ -205,17 +205,6 @@ impl VimHandler {
         self.last_visual_line_wise
     }
 
-    /// Set vim mode to Visual (for mouse drag selection).
-    pub fn set_mode_visual(&mut self, line_wise: bool) {
-        self.mode = VimMode::Visual { line_wise };
-        self.last_visual_line_wise = line_wise;
-    }
-
-    /// Set vim mode to Normal.
-    pub fn set_mode_normal(&mut self) {
-        self.mode = VimMode::Normal;
-    }
-
     /// Set vim mode to Insert (for change operator).
     pub fn set_mode_insert(&mut self) {
         self.mode = VimMode::Insert;
@@ -362,9 +351,16 @@ impl VimHandler {
             }
 
             // Motions -- if a pending operator is set, combine operator+motion
-            KeyCode::Char('h') | KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('l')
-            | KeyCode::Char('w') | KeyCode::Char('b') | KeyCode::Char('e')
-            | KeyCode::Char('$') | KeyCode::Char('{') | KeyCode::Char('}') => {
+            KeyCode::Char('h')
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::Char('l')
+            | KeyCode::Char('w')
+            | KeyCode::Char('b')
+            | KeyCode::Char('e')
+            | KeyCode::Char('$')
+            | KeyCode::Char('{')
+            | KeyCode::Char('}') => {
                 let count = self.take_count();
                 let motion = self.key_to_motion(key.code).unwrap();
 
@@ -433,7 +429,9 @@ impl VimHandler {
                 if let Some(Operator::Delete) = self.pending_operator {
                     // dd = delete line(s)
                     self.pending_operator = None;
-                    VimCommand::Delete { motion: Motion::Line }
+                    VimCommand::Delete {
+                        motion: Motion::Line,
+                    }
                 } else {
                     self.pending_operator = Some(Operator::Delete);
                     VimCommand::None
@@ -444,7 +442,9 @@ impl VimHandler {
                 if let Some(Operator::Change) = self.pending_operator {
                     // cc = change line(s)
                     self.pending_operator = None;
-                    VimCommand::Change { motion: Motion::Line }
+                    VimCommand::Change {
+                        motion: Motion::Line,
+                    }
                 } else {
                     self.pending_operator = Some(Operator::Change);
                     VimCommand::None
@@ -455,7 +455,9 @@ impl VimHandler {
                 if let Some(Operator::Yank) = self.pending_operator {
                     // yy = yank line(s)
                     self.pending_operator = None;
-                    VimCommand::Yank { motion: Motion::Line }
+                    VimCommand::Yank {
+                        motion: Motion::Line,
+                    }
                 } else {
                     self.pending_operator = Some(Operator::Yank);
                     VimCommand::None
@@ -466,14 +468,18 @@ impl VimHandler {
             KeyCode::Char('D') => {
                 self.reset_count();
                 self.pending_operator = None;
-                VimCommand::Delete { motion: Motion::ToEnd }
+                VimCommand::Delete {
+                    motion: Motion::ToEnd,
+                }
             }
 
             // C = shortcut for c$ (change to end of line)
             KeyCode::Char('C') => {
                 self.reset_count();
                 self.pending_operator = None;
-                VimCommand::Change { motion: Motion::ToEnd }
+                VimCommand::Change {
+                    motion: Motion::ToEnd,
+                }
             }
 
             // x = delete char under cursor
@@ -618,22 +624,38 @@ impl VimHandler {
             KeyCode::Left => {
                 let count = self.take_count();
                 self.pending_operator = None;
-                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Back, count) } else { VimCommand::Move(CursorMoveCmd::Back) }
+                if count > 1 {
+                    VimCommand::MoveN(CursorMoveCmd::Back, count)
+                } else {
+                    VimCommand::Move(CursorMoveCmd::Back)
+                }
             }
             KeyCode::Down => {
                 let count = self.take_count();
                 self.pending_operator = None;
-                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Down, count) } else { VimCommand::Move(CursorMoveCmd::Down) }
+                if count > 1 {
+                    VimCommand::MoveN(CursorMoveCmd::Down, count)
+                } else {
+                    VimCommand::Move(CursorMoveCmd::Down)
+                }
             }
             KeyCode::Up => {
                 let count = self.take_count();
                 self.pending_operator = None;
-                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Up, count) } else { VimCommand::Move(CursorMoveCmd::Up) }
+                if count > 1 {
+                    VimCommand::MoveN(CursorMoveCmd::Up, count)
+                } else {
+                    VimCommand::Move(CursorMoveCmd::Up)
+                }
             }
             KeyCode::Right => {
                 let count = self.take_count();
                 self.pending_operator = None;
-                if count > 1 { VimCommand::MoveN(CursorMoveCmd::Forward, count) } else { VimCommand::Move(CursorMoveCmd::Forward) }
+                if count > 1 {
+                    VimCommand::MoveN(CursorMoveCmd::Forward, count)
+                } else {
+                    VimCommand::Move(CursorMoveCmd::Forward)
+                }
             }
 
             // Page Up/Down and Home/End

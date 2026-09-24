@@ -34,7 +34,8 @@ mdedit --mode nano       # Use nano-style keybindings
 ## Features
 
 - Side-by-side editor + live rendered preview
-- **Render profiles**: GitHub, Obsidian, and CommonMark preview styles
+- **btop-style UI**: rounded bordered panels, clickable title-bar buttons, focus-follows-click, F1 help overlay
+- **Render profiles**: Clean (default, Warp-inspired), GitHub, Obsidian, and CommonMark preview styles
 - **Syntax-highlighted code blocks** in preview (Rust, Python, Bash, JSON, and more)
 - **Table rendering** with Unicode box-drawing borders and column alignment
 - **Callout/alert support** for GitHub (`> [!NOTE]`) and Obsidian (`> [!tip]`) syntax
@@ -96,10 +97,20 @@ mdedit --mode nano       # Use nano-style keybindings
 
 | Key | Action |
 |-----|--------|
+| `F1` | Help overlay (keybindings reference) |
+| `F2` | Settings panel |
 | `Ctrl+P` | Toggle view: split / editor only / preview only |
+| `Ctrl+Q` | Quit (prompts if unsaved) |
 | Mouse wheel | Scroll editor or preview |
-| Click | Position cursor |
-| Drag divider | Resize panes |
+| Click | Focus pane / position cursor |
+| Click title button | `^P view`, `F2 set`, `F1 help`, `^Q quit` |
+| Drag panel border | Resize panes |
+
+The UI follows btop conventions: each pane is a bordered panel with its title
+in the border, the focused panel gets an accent border, and the buttons on the
+top border are clickable. Click (or scroll) the preview to focus it — arrow
+keys (and `j`/`k`/`g`/`G` in vim normal mode) then scroll the preview, and
+editor scroll-sync pauses until you click back into the editor.
 
 ## Configuration
 
@@ -122,8 +133,8 @@ mode = "vim"
 # Color theme
 theme = "ocean"
 
-# Render profile: "github" (default), "obsidian", or "commonmark"
-render_profile = "github"
+# Render profile: "clean" (default), "github", "obsidian", or "commonmark"
+render_profile = "clean"
 
 # Sync indicator line in preview (default: true)
 sync_indicator = true
@@ -133,6 +144,7 @@ sync_indicator = true
 
 | Profile | Features |
 |---------|----------|
+| `clean` | GFM features with a minimal look: plain bold headings, outlined code blocks with language labels, borderless tables (record layout when narrow), reading margins with a 100-column cap |
 | `github` | GFM tables, task lists, alerts (`> [!NOTE]`), blue heading accents |
 | `obsidian` | Callouts, wikilinks (`[[page]]`), tags (`#tag`), purple/green headings |
 | `commonmark` | Strict CommonMark, no extensions, classic colored headings |

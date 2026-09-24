@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -12,6 +12,8 @@ pub struct StatusBarContent<'a> {
     pub cursor: (usize, usize),
     pub modified: bool,
     pub vim_mode: Option<(&'a str, ratatui::style::Color)>,
+    /// Contextual key hints rendered btop-style: accent-colored key + label.
+    pub hints: &'a [(&'a str, &'a str)],
 }
 
 /// Status bar widget that displays filename, cursor position, modified
@@ -37,11 +39,8 @@ impl StatusBar {
     /// Render the status bar into the given area.
     ///
     /// If a timed message is active, it is displayed. Otherwise, the normal
-    /// status line is shown: filename, modified indicator, and cursor position.
-    ///
-    /// When `vim_mode` is Some, renders vim mode indicator on the left with the
-    /// given background color and mode-appropriate hints. When None (nano mode),
-    /// renders the classic nano-style status bar.
+    /// status line is shown: mode indicator (vim), filename, modified marker,
+    /// btop-style key hints, and cursor position.
     pub fn render(
         &self,
         frame: &mut Frame,
@@ -69,81 +68,52 @@ impl StatusBar {
         let mod_indicator = if content.modified { " [+]" } else { "" };
         let (row, col) = content.cursor;
 
+        let key_style = Style::default()
+            .fg(theme.preview_accent_primary)
+            .bg(theme.status_bar_bg)
+            .add_modifier(Modifier::BOLD);
+
+        // Left segment: vim mode chip (if any) + filename.
+        let mut spans: Vec<Span> = Vec::new();
         if let Some((label, bg_color)) = content.vim_mode {
-            // Vim mode status bar: mode label on the left with mode bg color
-            let mode_label = format!(" {} ", label);
-            let file_info = format!(" {}{}", content.filename, mod_indicator);
-
-            // Mode-appropriate hints
-            let hints = if label.contains("NORMAL") {
-                "i Insert | v Visual | :w Save | :set Settings | :q Quit"
-            } else if label.contains("INSERT") {
-                "Esc Normal | Type to edit"
-            } else if label.contains("VISUAL") {
-                "d Del | y Yank | Esc Normal"
-            } else if label.contains("COMMAND") {
-                "Enter Execute | Esc Cancel"
-            } else {
-                ""
-            };
-
-            let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
-            let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
-
-            let available = area.width as usize;
-            let right = if mode_label.len() + file_info.len() + right_with_hints.len() <= available
-            {
-                right_with_hints
-            } else {
-                right_no_hints
-            };
-
-            let used = mode_label.len() + file_info.len() + right.len();
-            let spacer_width = if available > used {
-                available - used
-            } else {
-                1
-            };
-            let spacer = " ".repeat(spacer_width);
-
-            let line = Line::from(vec![
-                Span::styled(
-                    mode_label,
-                    Style::default().bg(bg_color).fg(theme.status_bar_fg),
-                ),
-                Span::raw(file_info),
-                Span::raw(spacer),
-                Span::raw(right),
-            ]);
-
-            let paragraph = Paragraph::new(line).style(style);
-            frame.render_widget(paragraph, area);
-        } else {
-            // Nano mode status bar (unchanged)
-            let left = format!(" {}{}", content.filename, mod_indicator);
-            let hints = "Ctrl+S Save | Ctrl+P Preview | Ctrl+Q Quit";
-            let right_with_hints = format!("{} | Ln {}, Col {} ", hints, row + 1, col + 1);
-            let right_no_hints = format!("Ln {}, Col {} ", row + 1, col + 1);
-
-            let available = area.width as usize;
-            let right = if left.len() + right_with_hints.len() <= available {
-                right_with_hints
-            } else {
-                right_no_hints
-            };
-
-            let used = left.len() + right.len();
-            let spacer_width = if available > used {
-                available - used
-            } else {
-                1
-            };
-            let spacer = " ".repeat(spacer_width);
-
-            let line = Line::from(vec![Span::raw(left), Span::raw(spacer), Span::raw(right)]);
-
-            let paragraph = Paragraph::new(line).style(style);
-            frame.render_widget(paragraph, area);
+            spans.push(Span::styled(
+                format!(" {} ", label),
+                Style::default().bg(bg_color).fg(theme.status_bar_fg),
+            ));
         }
+        spans.push(Span::raw(format!(" {}{}", content.filename, mod_indicator)));
+        let left_width: usize = spans.iter().map(|s| s.width()).sum();
+
+        // Right segment: hints (dropped when they don't fit) + cursor position.
+        let mut hint_spans: Vec<Span> = Vec::new();
+        for (key, label) in content.hints {
+            hint_spans.push(Span::styled((*key).to_string(), key_style));
+            hint_spans.push(Span::raw(format!(" {}  ", label)));
+        }
+        let hints_width: usize = hint_spans.iter().map(|s| s.width()).sum();
+        let position = format!("Ln {}, Col {} ", row + 1, col + 1);
+
+        let available = area.width as usize;
+        let show_hints = left_width + hints_width + position.len() < available;
+        let right_width = if show_hints {
+            hints_width + position.len()
+        } else {
+            position.len()
+        };
+
+        let used = left_width + right_width;
+        let spacer_width = if available > used {
+            available - used
+        } else {
+            1
+        };
+        spans.push(Span::raw(" ".repeat(spacer_width)));
+        if show_hints {
+            spans.extend(hint_spans);
+        }
+        spans.push(Span::raw(position));
+
+        let paragraph = Paragraph::new(Line::from(spans)).style(style);
+        frame.render_widget(paragraph, area);
     }
 }

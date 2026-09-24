@@ -7,6 +7,8 @@ use ratatui::Frame;
 use ratatui_textarea::{CursorMove, TextArea};
 use std::path::PathBuf;
 
+use unicode_width::UnicodeWidthChar;
+
 use crate::highlighter::{self, MarkdownHighlighter};
 use crate::theme::Theme;
 
@@ -66,10 +68,12 @@ pub struct Editor<'a> {
     theme: Theme,
     /// Whether to visually wrap long lines.
     pub word_wrap: bool,
-    /// Cursor's pane-relative screen row (offset from area top) as of the last
-    /// render. Used by preview scroll-sync to align the matched preview line
-    /// with the cursor on the same screen row.
-    cursor_screen_row: u16,
+    /// Pane-relative screen row where the cursor's logical line begins (may
+    /// be negative when the line's first rows are scrolled off). Scroll sync
+    /// aligns this row with the line's first preview row.
+    cursor_line_screen_row: i32,
+    /// Horizontal scroll in cells (no-wrap mode only).
+    hscroll: usize,
 }
 
 impl<'a> Editor<'a> {
@@ -116,15 +120,15 @@ impl<'a> Editor<'a> {
             scroll_top: 0,
             theme,
             word_wrap: false,
-            cursor_screen_row: 0,
+            cursor_line_screen_row: 0,
+            hscroll: 0,
         }
     }
 
-    /// The cursor's pane-relative screen row (offset from the editor area top)
-    /// as of the last render. Editor and preview panes share the same vertical
-    /// extent in Split mode, so this is directly comparable to a preview row.
-    pub fn cursor_screen_row(&self) -> u16 {
-        self.cursor_screen_row
+    /// Pane-relative screen row where the cursor's logical line starts, as of
+    /// the last render. Differs from the cursor row only for wrapped lines.
+    pub fn cursor_line_screen_row(&self) -> i32 {
+        self.cursor_line_screen_row
     }
 
     /// Apply a new theme at runtime.
@@ -389,31 +393,41 @@ impl<'a> Editor<'a> {
         text_col: usize,
         content_width: usize,
     ) -> (usize, usize) {
-        let total_lines = self.textarea.lines().len();
+        let lines = self.textarea.lines();
+        let total_lines = lines.len();
         if !self.word_wrap || content_width == 0 {
             // No wrap: scroll_top is a logical line number
             let logical_row = (self.scroll_top + rel_row).min(total_lines.saturating_sub(1));
-            let line_len = self
-                .textarea
-                .lines()
-                .get(logical_row)
-                .map(|l| l.len())
-                .unwrap_or(0);
-            (logical_row, text_col.min(line_len))
+            let line = lines.get(logical_row).map(String::as_str).unwrap_or("");
+            let n = line.chars().count();
+            (
+                logical_row,
+                char_at_display_col(line, 0, n, text_col + self.hscroll),
+            )
         } else {
             // Word wrap: scroll_top is a visual line number
             let visual_line = self.scroll_top + rel_row;
             let (logical_row, sub_line) =
                 self.logical_line_at_visual(visual_line, content_width, total_lines);
-            let logical_col = sub_line * content_width + text_col;
-            let line_len = self
-                .textarea
-                .lines()
-                .get(logical_row)
-                .map(|l| l.len())
-                .unwrap_or(0);
-            (logical_row, logical_col.min(line_len))
+            let line = lines.get(logical_row).map(String::as_str).unwrap_or("");
+            let n = line.chars().count();
+            let starts = wrap_starts(line, content_width);
+            let sub_line = sub_line.min(starts.len() - 1);
+            let from = starts[sub_line];
+            // Clicking past the end of a non-final row lands on its last char,
+            // not the first char of the next row.
+            let to = starts
+                .get(sub_line + 1)
+                .map(|next| next.saturating_sub(1).max(from))
+                .unwrap_or(n);
+            (logical_row, char_at_display_col(line, from, to, text_col))
         }
+    }
+
+    /// Whether syntax highlighting still has visible lines to catch up on
+    /// (the app should redraw soon rather than idle).
+    pub fn highlight_pending(&self) -> bool {
+        self.highlighter.is_pending()
     }
 
     /// Whether the buffer has been modified since last save.
@@ -657,6 +671,10 @@ impl<'a> Editor<'a> {
     /// editor content ourselves: highlighted lines via syntect, line numbers,
     /// and cursor positioning — while still using tui-textarea for input handling.
     /// The `search_query` parameter enables search match highlighting (D-08).
+    ///
+    /// All horizontal math is in terminal cells (unicode display width), not
+    /// bytes or chars, so wide characters (CJK, emoji) and multi-byte text
+    /// (em dashes, curly quotes) wrap and place the cursor correctly.
     pub fn render_highlighted(&mut self, frame: &mut Frame, area: Rect, search_query: &str) {
         let total_lines = self.textarea.lines().len();
         if area.width == 0 || area.height == 0 {
@@ -667,7 +685,6 @@ impl<'a> Editor<'a> {
         let lnum_width = highlighter::line_number_width(total_lines);
         let content_width = (area.width as usize).saturating_sub(lnum_width);
 
-        // Update scroll offset to keep cursor visible.
         let (cursor_row, cursor_col) = self.textarea.cursor();
         let ctx = RenderContext {
             area,
@@ -681,86 +698,97 @@ impl<'a> Editor<'a> {
         };
 
         if self.word_wrap && content_width > 0 {
+            self.hscroll = 0;
             self.render_highlighted_wrapped(frame, &ctx);
         } else {
             self.render_highlighted_nowrap(frame, &ctx);
         }
     }
 
-    /// Render without word wrap (original behavior).
+    /// Case-insensitive literal regex for the active search query, if any.
+    fn search_regex(search_query: &str) -> Option<regex::Regex> {
+        if search_query.is_empty() {
+            return None;
+        }
+        regex::Regex::new(&format!("(?i){}", regex::escape(search_query))).ok()
+    }
+
+    /// Byte offset of the cursor within its line (identifies the active match).
+    fn cursor_byte(&self, ctx: &RenderContext<'_>) -> usize {
+        let line = &self.textarea.lines()[ctx.cursor_row];
+        line.char_indices()
+            .nth(ctx.cursor_col)
+            .map(|(i, _)| i)
+            .unwrap_or(line.len())
+    }
+
+    /// Layer search-match and selection highlights over a highlighted line.
+    fn overlay_spans(
+        &self,
+        row: usize,
+        mut spans: Vec<Span<'static>>,
+        search_re: Option<&regex::Regex>,
+        ctx: &RenderContext<'_>,
+    ) -> Vec<Span<'static>> {
+        // Layer 1: Search match highlights (D-08)
+        if let Some(re) = search_re {
+            let line_text = &self.textarea.lines()[row];
+            let active_match_byte = if row == ctx.cursor_row {
+                Some(self.cursor_byte(ctx))
+            } else {
+                None
+            };
+            for m in re.find_iter(line_text) {
+                let highlight_style = if active_match_byte == Some(m.start()) {
+                    Style::default()
+                        .bg(self.theme.search_active_bg)
+                        .fg(self.theme.search_active_fg)
+                } else {
+                    Style::default()
+                        .bg(self.theme.search_match_bg)
+                        .fg(self.theme.search_match_fg)
+                };
+                spans = apply_highlight_overlay(spans, m.start(), m.end(), highlight_style);
+            }
+        }
+
+        // Layer 2: Selection highlight (applied after search so it takes priority)
+        if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
+            let selection_style = Style::default().bg(self.theme.selection_bg);
+            spans = apply_highlight_overlay(spans, sel_start, sel_end, selection_style);
+        }
+        spans
+    }
+
+    /// Render without word wrap. Long lines scroll horizontally to keep the
+    /// cursor visible.
     fn render_highlighted_nowrap(&mut self, frame: &mut Frame, ctx: &RenderContext<'_>) {
         self.update_scroll(ctx.cursor_row, ctx.height);
         let scroll_top = self.scroll_top;
-
-        // Get visible line range
         let visible_end = std::cmp::min(scroll_top + ctx.height, ctx.total_lines);
 
-        // Highlight text through the visible range.
-        let full_text = self.content();
-        let highlighted = self
-            .highlighter
-            .highlight_range(&full_text, scroll_top, visible_end);
+        let highlighted =
+            self.highlighter
+                .highlight_range(self.textarea.lines(), scroll_top, visible_end);
+        let search_re = Self::search_regex(ctx.search_query);
 
-        // Compile search regex if query is non-empty (D-08)
-        let search_re = if !ctx.search_query.is_empty() {
-            regex::Regex::new(&format!("(?i){}", regex::escape(ctx.search_query))).ok()
-        } else {
-            None
-        };
+        // Horizontal scroll (in cells) so the cursor column stays on screen.
+        let cursor_x = display_width_to(&self.textarea.lines()[ctx.cursor_row], ctx.cursor_col);
+        if ctx.content_width == 0 {
+            self.hscroll = 0;
+        } else if cursor_x < self.hscroll {
+            self.hscroll = cursor_x;
+        } else if cursor_x >= self.hscroll + ctx.content_width {
+            self.hscroll = cursor_x + 1 - ctx.content_width;
+        }
 
-        // Determine active match position for distinguishing current match (D-08)
-        let active_match_byte = if search_re.is_some() {
-            let line = &self.textarea.lines()[ctx.cursor_row];
-            line.char_indices()
-                .nth(ctx.cursor_col)
-                .map(|(i, _)| i)
-                .unwrap_or(line.len())
-        } else {
-            0
-        };
-
-        // Selection highlight style (D-13)
-        let selection_style = Style::default().bg(self.theme.selection_bg);
-
-        // Build final lines with line numbers prepended
         let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(ctx.height);
         for (i, hl_line) in highlighted.into_iter().enumerate() {
             let row = scroll_top + i;
             let lnum =
                 highlighter::line_number_span(row, ctx.total_lines, self.theme.line_number_fg);
-
-            let mut content_spans = hl_line.spans;
-
-            // Layer 1: Search match highlights (D-08)
-            if let Some(ref re) = search_re {
-                if row < self.textarea.lines().len() {
-                    let line_text = &self.textarea.lines()[row];
-                    let matches: Vec<(usize, usize)> = re
-                        .find_iter(line_text)
-                        .map(|m| (m.start(), m.end()))
-                        .collect();
-                    for (start, end) in matches {
-                        let is_active = row == ctx.cursor_row && start == active_match_byte;
-                        let highlight_style = if is_active {
-                            Style::default()
-                                .bg(self.theme.search_active_bg)
-                                .fg(self.theme.search_active_fg)
-                        } else {
-                            Style::default()
-                                .bg(self.theme.search_match_bg)
-                                .fg(self.theme.search_match_fg)
-                        };
-                        content_spans =
-                            apply_highlight_overlay(content_spans, start, end, highlight_style);
-                    }
-                }
-            }
-
-            // Layer 2: Selection highlight (applied after search so it takes priority)
-            if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
-                content_spans =
-                    apply_highlight_overlay(content_spans, sel_start, sel_end, selection_style);
-            }
+            let content_spans = self.overlay_spans(row, hl_line.spans, search_re.as_ref(), ctx);
+            let content_spans = clip_spans(content_spans, self.hscroll, ctx.content_width);
 
             let mut final_spans = vec![lnum];
             final_spans.extend(content_spans);
@@ -772,207 +800,115 @@ impl<'a> Editor<'a> {
             display_lines.push(line);
         }
 
-        while display_lines.len() < ctx.height {
-            display_lines.push(Line::from(""));
-        }
+        frame.render_widget(Paragraph::new(display_lines), ctx.area);
 
-        let paragraph = Paragraph::new(display_lines);
-        frame.render_widget(paragraph, ctx.area);
-
-        let cursor_x = ctx.area.x + ctx.lnum_width as u16 + ctx.cursor_col as u16;
         let cursor_rel_row = ctx.cursor_row.saturating_sub(scroll_top) as u16;
-        self.cursor_screen_row = cursor_rel_row;
+        self.cursor_line_screen_row = i32::from(cursor_rel_row);
+        let cursor_x = ctx.area.x + (ctx.lnum_width + cursor_x - self.hscroll) as u16;
         let cursor_y = ctx.area.y + cursor_rel_row;
         if cursor_x < ctx.area.x + ctx.area.width && cursor_y < ctx.area.y + ctx.area.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 
-    /// Render with word wrap enabled.
+    /// Render with word wrap enabled. `scroll_top` counts visual rows.
     fn render_highlighted_wrapped(&mut self, frame: &mut Frame, ctx: &RenderContext<'_>) {
-        // Calculate which visual line the cursor is on, accounting for wrapping.
-        // We need to figure out scroll_top in logical lines such that the cursor's
-        // visual line is visible.
         let wrap_width = ctx.content_width.max(1);
 
-        // Calculate visual lines per logical line for lines up to and including cursor
-        let cursor_visual_line =
-            self.visual_line_offset(ctx.cursor_row, ctx.cursor_col, wrap_width);
-        let cursor_visual_start = self.visual_line_start(ctx.cursor_row, wrap_width);
-        let cursor_visual_abs = cursor_visual_start + cursor_visual_line;
+        // Which visual row of its line the cursor sits on, and where that
+        // line starts in the document's visual-row space.
+        let cursor_line = &self.textarea.lines()[ctx.cursor_row];
+        let cursor_starts = wrap_starts(cursor_line, wrap_width);
+        let cursor_sub = cursor_starts
+            .partition_point(|&s| s <= ctx.cursor_col)
+            .saturating_sub(1);
+        let cursor_x =
+            display_width_between(cursor_line, cursor_starts[cursor_sub], ctx.cursor_col)
+                .min(wrap_width - 1);
+        let cursor_visual_abs = self.visual_line_start(ctx.cursor_row, wrap_width) + cursor_sub;
 
-        // Update scroll for wrapped mode: scroll_top is in visual lines
         if cursor_visual_abs < self.scroll_top {
             self.scroll_top = cursor_visual_abs;
         } else if cursor_visual_abs >= self.scroll_top + ctx.height {
             self.scroll_top = cursor_visual_abs + 1 - ctx.height;
         }
-        let visual_scroll_top = self.scroll_top;
 
-        // Now figure out which logical lines are visible given our visual scroll position
         let (first_logical, skip_visual) =
-            self.logical_line_at_visual(visual_scroll_top, wrap_width, ctx.total_lines);
+            self.logical_line_at_visual(self.scroll_top, wrap_width, ctx.total_lines);
 
-        // We need to highlight enough logical lines to fill the viewport
+        // Every logical line takes at least one row, so height+1 lines suffice.
         let highlight_end = std::cmp::min(first_logical + ctx.height + 1, ctx.total_lines);
-        let full_text = self.content();
         let highlighted =
             self.highlighter
-                .highlight_range(&full_text, first_logical, highlight_end);
-
-        let search_re = if !ctx.search_query.is_empty() {
-            regex::Regex::new(&format!("(?i){}", regex::escape(ctx.search_query))).ok()
-        } else {
-            None
-        };
-
-        let active_match_byte = if search_re.is_some() {
-            let line = &self.textarea.lines()[ctx.cursor_row];
-            line.char_indices()
-                .nth(ctx.cursor_col)
-                .map(|(i, _)| i)
-                .unwrap_or(line.len())
-        } else {
-            0
-        };
-
-        let selection_style = Style::default().bg(self.theme.selection_bg);
+                .highlight_range(self.textarea.lines(), first_logical, highlight_end);
+        let search_re = Self::search_regex(ctx.search_query);
 
         let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(ctx.height);
         let mut cursor_screen_y: Option<u16> = None;
-        let mut cursor_screen_x: Option<u16> = None;
 
         for (i, hl_line) in highlighted.into_iter().enumerate() {
             if display_lines.len() >= ctx.height {
                 break;
             }
             let row = first_logical + i;
-
-            let mut content_spans = hl_line.spans;
-
-            // Search highlights
-            if let Some(ref re) = search_re {
-                if row < self.textarea.lines().len() {
-                    let line_text = &self.textarea.lines()[row];
-                    let matches: Vec<(usize, usize)> = re
-                        .find_iter(line_text)
-                        .map(|m| (m.start(), m.end()))
-                        .collect();
-                    for (start, end) in matches {
-                        let is_active = row == ctx.cursor_row && start == active_match_byte;
-                        let highlight_style = if is_active {
-                            Style::default()
-                                .bg(self.theme.search_active_bg)
-                                .fg(self.theme.search_active_fg)
-                        } else {
-                            Style::default()
-                                .bg(self.theme.search_match_bg)
-                                .fg(self.theme.search_match_fg)
-                        };
-                        content_spans =
-                            apply_highlight_overlay(content_spans, start, end, highlight_style);
-                    }
-                }
-            }
-
-            // Selection highlight
-            if let Some((sel_start, sel_end)) = self.selection_byte_range(row) {
-                content_spans =
-                    apply_highlight_overlay(content_spans, sel_start, sel_end, selection_style);
-            }
-
-            // Split spans into wrapped visual lines
-            let wrapped = wrap_spans(content_spans, wrap_width);
+            let skip = if i == 0 { skip_visual } else { 0 };
             let is_cursor_line = row == ctx.cursor_row;
+            if is_cursor_line {
+                self.cursor_line_screen_row = display_lines.len() as i32 - skip as i32;
+            }
 
-            for (vi, visual_line_spans) in wrapped.iter().enumerate() {
-                // Skip visual lines before the scroll position (for partial first line)
-                if i == 0 && vi < skip_visual {
-                    continue;
-                }
+            let content_spans = self.overlay_spans(row, hl_line.spans, search_re.as_ref(), ctx);
+            let line_text = &self.textarea.lines()[row];
+            let byte_starts = char_starts_to_bytes(line_text, &wrap_starts(line_text, wrap_width));
+            let wrapped = split_spans_at(content_spans, &byte_starts);
+
+            for (vi, visual_line_spans) in wrapped.into_iter().enumerate().skip(skip) {
                 if display_lines.len() >= ctx.height {
                     break;
                 }
 
-                // Line number: show on first visual line of a logical line, blank on continuations
+                // Line number on the first visual row, blank on continuations
                 let lnum = if vi == 0 {
                     highlighter::line_number_span(row, ctx.total_lines, self.theme.line_number_fg)
                 } else {
-                    Span::styled(
-                        " ".repeat(ctx.lnum_width),
-                        Style::default().fg(self.theme.line_number_fg),
-                    )
+                    Span::raw(" ".repeat(ctx.lnum_width))
                 };
 
                 let mut final_spans = vec![lnum];
-                final_spans.extend(visual_line_spans.clone());
+                final_spans.extend(visual_line_spans);
 
                 let mut line = Line::from(final_spans);
                 if is_cursor_line {
                     line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
                 }
-
-                // Track cursor position
-                if is_cursor_line && vi == cursor_visual_line {
-                    let col_in_visual = ctx.cursor_col % wrap_width;
-                    cursor_screen_x =
-                        Some(ctx.area.x + ctx.lnum_width as u16 + col_in_visual as u16);
-                    cursor_screen_y = Some(ctx.area.y + display_lines.len() as u16);
+                if is_cursor_line && vi == cursor_sub {
+                    cursor_screen_y = Some(display_lines.len() as u16);
                 }
-
                 display_lines.push(line);
             }
         }
 
-        while display_lines.len() < ctx.height {
-            display_lines.push(Line::from(""));
-        }
-
-        let paragraph = Paragraph::new(display_lines);
-        frame.render_widget(paragraph, ctx.area);
+        frame.render_widget(Paragraph::new(display_lines), ctx.area);
 
         if let Some(cy) = cursor_screen_y {
-            self.cursor_screen_row = cy.saturating_sub(ctx.area.y);
-        }
-
-        if let (Some(cx), Some(cy)) = (cursor_screen_x, cursor_screen_y) {
-            if cx < ctx.area.x + ctx.area.width && cy < ctx.area.y + ctx.area.height {
-                frame.set_cursor_position((cx, cy));
+            let x = ctx.area.x + (ctx.lnum_width + cursor_x) as u16;
+            let y = ctx.area.y + cy;
+            if x < ctx.area.x + ctx.area.width && y < ctx.area.y + ctx.area.height {
+                frame.set_cursor_position((x, y));
             }
         }
     }
 
-    /// Calculate how many visual lines a logical line takes when wrapped.
-    fn visual_lines_for_row(&self, row: usize, wrap_width: usize) -> usize {
-        let line_len = self.textarea.lines().get(row).map(|l| l.len()).unwrap_or(0);
-        if line_len == 0 {
-            1
-        } else {
-            line_len.div_ceil(wrap_width)
-        }
-    }
-
-    /// Calculate which visual sub-line the cursor is on within its logical line.
-    fn visual_line_offset(
-        &self,
-        _cursor_row: usize,
-        cursor_col: usize,
-        wrap_width: usize,
-    ) -> usize {
-        cursor_col / wrap_width
-    }
-
-    /// Calculate the absolute visual line number where a logical line starts.
+    /// Absolute visual row where logical line `row` starts.
     fn visual_line_start(&self, row: usize, wrap_width: usize) -> usize {
-        let mut visual = 0;
-        for r in 0..row {
-            visual += self.visual_lines_for_row(r, wrap_width);
-        }
-        visual
+        self.textarea.lines()[..row]
+            .iter()
+            .map(|l| visual_rows(l, wrap_width))
+            .sum()
     }
 
-    /// Given an absolute visual line number, find which logical line it belongs to
-    /// and how many visual lines into that logical line to skip.
+    /// Given an absolute visual row, find which logical line it belongs to
+    /// and how many visual rows into that logical line it is.
     fn logical_line_at_visual(
         &self,
         visual_line: usize,
@@ -980,8 +916,8 @@ impl<'a> Editor<'a> {
         total_lines: usize,
     ) -> (usize, usize) {
         let mut visual = 0;
-        for row in 0..total_lines {
-            let vlines = self.visual_lines_for_row(row, wrap_width);
+        for (row, line) in self.textarea.lines().iter().enumerate() {
+            let vlines = visual_rows(line, wrap_width);
             if visual + vlines > visual_line {
                 return (row, visual_line - visual);
             }
@@ -993,19 +929,165 @@ impl<'a> Editor<'a> {
     /// Update scroll_top to keep the cursor within the visible viewport.
     fn update_scroll(&mut self, cursor_row: usize, height: usize) {
         if cursor_row < self.scroll_top {
-            // Cursor above viewport -- scroll up
             self.scroll_top = cursor_row;
         } else if cursor_row >= self.scroll_top + height {
-            // Cursor below viewport -- scroll down
             self.scroll_top = cursor_row + 1 - height;
         }
-        // Otherwise cursor is within viewport -- don't change scroll
     }
+}
+
+/// Terminal cell width of a char. Tabs are rendered as a single space.
+fn char_width(c: char) -> usize {
+    if c == '\t' {
+        1
+    } else {
+        UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
+
+/// True when every char is printable ASCII (or tab), i.e. one cell per byte.
+fn is_simple_ascii(line: &str) -> bool {
+    line.bytes()
+        .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
+}
+
+/// Char indices at which each visual row of `line` begins when hard-wrapped
+/// at `width` cells. Always starts with 0.
+fn wrap_starts(line: &str, width: usize) -> Vec<usize> {
+    let width = width.max(1);
+    if is_simple_ascii(line) {
+        let rows = line.len().div_ceil(width).max(1);
+        return (0..rows).map(|r| r * width).collect();
+    }
+    let mut starts = vec![0];
+    let mut col = 0;
+    for (i, c) in line.chars().enumerate() {
+        let w = char_width(c);
+        if col + w > width && col > 0 {
+            starts.push(i);
+            col = 0;
+        }
+        col += w;
+    }
+    starts
+}
+
+/// Number of visual rows `line` occupies when hard-wrapped at `width` cells.
+fn visual_rows(line: &str, width: usize) -> usize {
+    if is_simple_ascii(line) {
+        line.len().div_ceil(width.max(1)).max(1)
+    } else {
+        wrap_starts(line, width).len()
+    }
+}
+
+/// Display width of the first `char_col` chars of `line`.
+fn display_width_to(line: &str, char_col: usize) -> usize {
+    display_width_between(line, 0, char_col)
+}
+
+/// Display width of chars `[from, to)` of `line`.
+fn display_width_between(line: &str, from: usize, to: usize) -> usize {
+    line.chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .map(char_width)
+        .sum()
+}
+
+/// Char index within `[from, to]` of `line` that a click at cell `x`
+/// (relative to char `from`) lands on.
+fn char_at_display_col(line: &str, from: usize, to: usize, x: usize) -> usize {
+    let mut col = 0;
+    for (i, c) in line.chars().enumerate().skip(from).take(to - from) {
+        let w = char_width(c);
+        if col + w > x {
+            return i;
+        }
+        col += w;
+    }
+    to
+}
+
+/// Convert char-index row starts into byte offsets.
+fn char_starts_to_bytes(line: &str, starts: &[usize]) -> Vec<usize> {
+    if starts.len() <= 1 {
+        return vec![0];
+    }
+    let mut out = Vec::with_capacity(starts.len());
+    let mut next = 0;
+    for (ci, (bi, _)) in line.char_indices().enumerate() {
+        if next < starts.len() && starts[next] == ci {
+            out.push(bi);
+            next += 1;
+            if next == starts.len() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Split a line's spans into visual rows at the given byte offsets
+/// (`byte_starts[0]` is 0).
+fn split_spans_at(spans: Vec<Span<'static>>, byte_starts: &[usize]) -> Vec<Vec<Span<'static>>> {
+    let mut rows: Vec<Vec<Span<'static>>> = vec![Vec::new(); byte_starts.len().max(1)];
+    let mut pos = 0;
+    let mut row = 0;
+    for span in spans {
+        let content = span.content.as_ref();
+        let mut local = 0;
+        while local < content.len() {
+            while row + 1 < byte_starts.len() && byte_starts[row + 1] <= pos + local {
+                row += 1;
+            }
+            let row_end = byte_starts.get(row + 1).copied().unwrap_or(usize::MAX);
+            let take = (row_end - (pos + local)).min(content.len() - local);
+            rows[row].push(Span::styled(
+                content[local..local + take].to_string(),
+                span.style,
+            ));
+            local += take;
+        }
+        pos += content.len();
+    }
+    rows
+}
+
+/// Drop the first `skip` cells of a line (horizontal scroll). A wide char cut
+/// by the left edge is replaced with spaces so columns stay aligned. The right
+/// edge is left to the Paragraph, which truncates at the area width.
+fn clip_spans(spans: Vec<Span<'static>>, skip: usize, width: usize) -> Vec<Span<'static>> {
+    if skip == 0 {
+        return spans;
+    }
+    let limit = skip + width;
+    let mut out = Vec::new();
+    let mut col = 0;
+    for span in spans {
+        if col >= limit {
+            break;
+        }
+        let mut kept = String::new();
+        for c in span.content.chars() {
+            let w = char_width(c);
+            if col >= skip {
+                kept.push(if c == '\t' { ' ' } else { c });
+            } else if col + w > skip {
+                kept.push_str(&" ".repeat(col + w - skip));
+            }
+            col += w;
+        }
+        if !kept.is_empty() {
+            out.push(Span::styled(kept, span.style));
+        }
+    }
+    out
 }
 
 /// Apply a highlight overlay (e.g., selection or search highlight) to a set of spans.
 /// Splits spans at byte boundaries `start` and `end`, applying `overlay_style` background
-/// to the bytes within that range. Reusable for search highlights in Plan 02.
+/// to the bytes within that range.
 pub fn apply_highlight_overlay(
     spans: Vec<Span<'static>>,
     start: usize,
@@ -1025,20 +1107,16 @@ pub fn apply_highlight_overlay(
         let span_end = byte_pos + span_len;
 
         if span_end <= start || span_start >= end {
-            // Span is entirely outside the highlight range
             result.push(span);
         } else {
-            // Span overlaps with highlight range -- split it
             let content = span.content.to_string();
             let base_style = span.style;
 
-            // Part before highlight
             if span_start < start {
                 let before_end = start - span_start;
                 result.push(Span::styled(content[..before_end].to_string(), base_style));
             }
 
-            // Highlighted part
             let hl_start = start.saturating_sub(span_start);
             let hl_end = if end < span_end {
                 end - span_start
@@ -1057,7 +1135,6 @@ pub fn apply_highlight_overlay(
                 ));
             }
 
-            // Part after highlight
             if span_end > end {
                 let after_start = end - span_start;
                 result.push(Span::styled(content[after_start..].to_string(), base_style));
@@ -1068,65 +1145,6 @@ pub fn apply_highlight_overlay(
     }
 
     result
-}
-
-/// Split a list of spans into multiple visual lines at `wrap_width` character boundaries.
-/// Returns a vec of visual lines, each being a vec of spans.
-fn wrap_spans(spans: Vec<Span<'static>>, wrap_width: usize) -> Vec<Vec<Span<'static>>> {
-    if spans.is_empty() {
-        return vec![vec![]];
-    }
-
-    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
-    let mut col = 0;
-
-    for span in spans {
-        let style = span.style;
-        let content = span.content.to_string();
-        let mut remaining = content.as_str();
-
-        while !remaining.is_empty() {
-            let avail = wrap_width.saturating_sub(col);
-            if avail == 0 {
-                // Start a new visual line
-                lines.push(vec![]);
-                col = 0;
-                continue;
-            }
-
-            let take = remaining.len().min(avail);
-            // Ensure we don't split in the middle of a multi-byte char
-            let take = if take < remaining.len() {
-                let mut end = take;
-                while end > 0 && !remaining.is_char_boundary(end) {
-                    end -= 1;
-                }
-                if end == 0 {
-                    // Single char wider than available — take at least one char
-                    remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1)
-                } else {
-                    end
-                }
-            } else {
-                take
-            };
-
-            let chunk = &remaining[..take];
-            lines
-                .last_mut()
-                .unwrap()
-                .push(Span::styled(chunk.to_string(), style));
-            col += chunk.len();
-            remaining = &remaining[take..];
-
-            if col >= wrap_width && !remaining.is_empty() {
-                lines.push(vec![]);
-                col = 0;
-            }
-        }
-    }
-
-    lines
 }
 
 #[cfg(test)]
@@ -1159,5 +1177,63 @@ mod tests {
         let action = editor.handle_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE));
         assert_eq!(action, Some(super::EditorAction::ContentChanged));
         assert_eq!(editor.content(), "!alpha\r\nbeta\r\n");
+    }
+
+    fn render_cursor(editor: &mut Editor, width: u16, height: u16) -> (u16, u16) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| editor.render_highlighted(f, f.area(), ""))
+            .unwrap();
+        let pos = terminal.get_cursor_position().unwrap();
+        (pos.x, pos.y)
+    }
+
+    fn jump(editor: &mut Editor, row: u16, col: u16) {
+        editor
+            .textarea_mut()
+            .move_cursor(ratatui_textarea::CursorMove::Jump(row, col));
+    }
+
+    #[test]
+    fn wrap_starts_measure_cells_not_bytes() {
+        assert_eq!(super::wrap_starts("abcdefgh", 3), vec![0, 3, 6]);
+        assert_eq!(super::wrap_starts("", 3), vec![0]);
+        // 日/本/語 are 2 cells each; em dash is 3 bytes but 1 cell.
+        assert_eq!(super::wrap_starts("日本語abc", 4), vec![0, 2, 5]);
+        assert_eq!(super::wrap_starts("a—b—c", 2), vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn wrapped_cursor_lands_on_the_right_cell_with_wide_chars() {
+        let mut editor = Editor::new(Some("日本語日本語\n".into()), None, Theme::ocean());
+        editor.word_wrap = true;
+        jump(&mut editor, 0, 3);
+        // Gutter is 2 cells ("1 "), leaving 5 for text: rows start at chars
+        // [0, 2, 4]; char 3 is the second glyph of row 1.
+        assert_eq!(render_cursor(&mut editor, 7, 5), (4, 1));
+        assert_eq!(editor.cursor_line_screen_row(), 0);
+    }
+
+    #[test]
+    fn nowrap_scrolls_horizontally_to_keep_cursor_visible() {
+        let mut editor = Editor::new(Some(format!("{}\n", "a".repeat(100))), None, Theme::ocean());
+        jump(&mut editor, 0, 100);
+        let (x, _) = render_cursor(&mut editor, 22, 3);
+        assert!(x < 22, "cursor x {x} off screen");
+        // Clicking the first text cell maps back through the scroll offset.
+        let (row, col) = editor.visual_click_to_logical(0, 0, 20);
+        assert_eq!((row, col), (0, 100 + 1 - 20));
+    }
+
+    #[test]
+    fn clicks_map_display_columns_to_chars() {
+        let mut editor = Editor::new(Some("日本語abc\n".into()), None, Theme::ocean());
+        let _ = render_cursor(&mut editor, 40, 3);
+        // Cell 3 is the right half of 本 (char 1); cell 6 is 'a' (char 3).
+        assert_eq!(editor.visual_click_to_logical(0, 3, 38), (0, 1));
+        assert_eq!(editor.visual_click_to_logical(0, 6, 38), (0, 3));
+        assert_eq!(editor.visual_click_to_logical(0, 99, 38), (0, 6));
     }
 }

@@ -82,8 +82,15 @@ None yet.
 - tui-markdown is experimental — may need replacement for WYSIWYG inline rendering
 - WYSIWYG confidence is LOW per research — prototype recommended before full commit
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260702-tek | btop-style UI/UX restyle (bordered panels, title buttons, help overlay, focus-follows-click, hint bar) | 2026-07-03 | uncommitted | [260702-tek-btop-style-ui-restyle](./quick/260702-tek-btop-style-ui-restyle/) |
+
 ## Session Continuity
 
 Last session: 2026-03-23T15:46:49.041Z
 Stopped at: Completed 06-01-PLAN.md
 Resume file: None
+Last activity: 2026-07-03 - Completed quick task 260702-tek: btop-style UI/UX restyle (left uncommitted for review)

@@ -4,24 +4,23 @@ use std::collections::HashMap;
 use crate::theme::{Theme, ThemeColors};
 
 /// Editing mode for keybindings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EditingMode {
+    #[default]
     Vim,
     Nano,
 }
 
-impl Default for EditingMode {
-    fn default() -> Self {
-        EditingMode::Vim
-    }
-}
-
 /// Markdown render profile — controls how the preview renders markdown
 /// to match the target platform's style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RenderProfile {
+    /// GitHub-flavored features with a minimal, Warp-inspired look: plain
+    /// bold headings, outlined code blocks, borderless tables, reading margins
+    #[default]
+    Clean,
     /// GitHub Flavored Markdown: GFM tables, task lists, alerts, no wikilinks
     Github,
     /// Obsidian: callouts, wikilinks, tags, embeds
@@ -30,15 +29,10 @@ pub enum RenderProfile {
     CommonMark,
 }
 
-impl Default for RenderProfile {
-    fn default() -> Self {
-        RenderProfile::Github
-    }
-}
-
 impl RenderProfile {
     pub fn name(&self) -> &'static str {
         match self {
+            RenderProfile::Clean => "clean",
             RenderProfile::Github => "github",
             RenderProfile::Obsidian => "obsidian",
             RenderProfile::CommonMark => "commonmark",
@@ -47,6 +41,7 @@ impl RenderProfile {
 
     pub fn display_name(&self) -> &'static str {
         match self {
+            RenderProfile::Clean => "Clean",
             RenderProfile::Github => "GitHub",
             RenderProfile::Obsidian => "Obsidian",
             RenderProfile::CommonMark => "CommonMark",
@@ -54,11 +49,17 @@ impl RenderProfile {
     }
 
     pub fn all() -> &'static [RenderProfile] {
-        &[RenderProfile::Github, RenderProfile::Obsidian, RenderProfile::CommonMark]
+        &[
+            RenderProfile::Clean,
+            RenderProfile::Github,
+            RenderProfile::Obsidian,
+            RenderProfile::CommonMark,
+        ]
     }
 
     pub fn from_name(name: &str) -> Option<RenderProfile> {
         match name.to_lowercase().as_str() {
+            "clean" | "warp" => Some(RenderProfile::Clean),
             "github" | "gfm" => Some(RenderProfile::Github),
             "obsidian" => Some(RenderProfile::Obsidian),
             "commonmark" | "common" => Some(RenderProfile::CommonMark),
@@ -87,6 +88,19 @@ pub struct CustomThemeColors {
     pub prompt_bg: Option<String>,
     pub prompt_fg: Option<String>,
     pub syntect_theme: Option<String>,
+    pub preview_fg: Option<String>,
+    pub preview_muted_fg: Option<String>,
+    pub preview_link_fg: Option<String>,
+    pub preview_inline_code_fg: Option<String>,
+    pub preview_inline_code_bg: Option<String>,
+    pub preview_code_bg: Option<String>,
+    pub preview_indicator_fg: Option<String>,
+    pub preview_indicator_bg: Option<String>,
+    pub preview_accent_primary: Option<String>,
+    pub preview_accent_secondary: Option<String>,
+    pub preview_accent_tertiary: Option<String>,
+    pub preview_accent_warning: Option<String>,
+    pub preview_accent_danger: Option<String>,
     pub mode_normal_bg: Option<String>,
     pub mode_insert_bg: Option<String>,
     pub mode_visual_bg: Option<String>,
@@ -113,6 +127,19 @@ impl CustomThemeColors {
             prompt_bg: self.prompt_bg.clone(),
             prompt_fg: self.prompt_fg.clone(),
             syntect_theme: self.syntect_theme.clone(),
+            preview_fg: self.preview_fg.clone(),
+            preview_muted_fg: self.preview_muted_fg.clone(),
+            preview_link_fg: self.preview_link_fg.clone(),
+            preview_inline_code_fg: self.preview_inline_code_fg.clone(),
+            preview_inline_code_bg: self.preview_inline_code_bg.clone(),
+            preview_code_bg: self.preview_code_bg.clone(),
+            preview_indicator_fg: self.preview_indicator_fg.clone(),
+            preview_indicator_bg: self.preview_indicator_bg.clone(),
+            preview_accent_primary: self.preview_accent_primary.clone(),
+            preview_accent_secondary: self.preview_accent_secondary.clone(),
+            preview_accent_tertiary: self.preview_accent_tertiary.clone(),
+            preview_accent_warning: self.preview_accent_warning.clone(),
+            preview_accent_danger: self.preview_accent_danger.clone(),
             mode_normal_bg: self.mode_normal_bg.clone(),
             mode_insert_bg: self.mode_insert_bg.clone(),
             mode_visual_bg: self.mode_visual_bg.clone(),
@@ -137,7 +164,9 @@ pub struct Config {
     pub custom_themes: HashMap<String, CustomThemeColors>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -180,41 +209,60 @@ pub fn load_config() -> Config {
 /// Resolve a Theme from the config: try built-in names first, then custom themes,
 /// then fall back to ocean with a warning.
 pub fn resolve_theme(config: &Config) -> Theme {
+    resolve_theme_name(config, &config.theme).unwrap_or_else(|| {
+        eprintln!("Warning: unknown theme '{}', using ocean", config.theme);
+        Theme::ocean()
+    })
+}
+
+/// Resolve a theme by name using built-ins first, then custom theme definitions.
+pub fn resolve_theme_name(config: &Config, theme_name: &str) -> Option<Theme> {
     // Try built-in theme
-    if let Some(theme) = Theme::by_name(&config.theme) {
-        return theme;
+    if let Some(theme) = Theme::by_name(theme_name) {
+        return Some(theme);
     }
 
     // Try custom theme from config
-    if let Some(custom) = config.custom_themes.get(&config.theme) {
-        return Theme::from_custom(&Theme::ocean(), &custom.to_theme_colors());
+    if let Some(custom) = config.custom_themes.get(theme_name) {
+        return Some(Theme::from_custom(
+            &Theme::ocean(),
+            &custom.to_theme_colors(),
+        ));
     }
 
-    // Unknown theme -- warn and use default
-    eprintln!(
-        "Warning: unknown theme '{}', using ocean",
-        config.theme
-    );
-    Theme::ocean()
+    None
+}
+
+/// Return built-in and custom theme names, keeping the built-ins first.
+pub fn available_theme_names(config: &Config) -> Vec<String> {
+    let mut names: Vec<String> = Theme::available_themes()
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+
+    let mut custom: Vec<String> = config.custom_themes.keys().cloned().collect();
+    custom.sort();
+    custom.retain(|name| !names.contains(name));
+    names.extend(custom);
+    names
 }
 
 /// Save configuration to ~/.config/mdedit/config.toml.
 /// Creates the directory if it doesn't exist.
 /// Returns Ok(path) on success or Err(message) on failure.
 pub fn save_config(config: &Config) -> Result<String, String> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| "Could not determine config directory".to_string())?;
+    let config_dir =
+        dirs::config_dir().ok_or_else(|| "Could not determine config directory".to_string())?;
     let mdedit_dir = config_dir.join("mdedit");
 
     std::fs::create_dir_all(&mdedit_dir)
         .map_err(|e| format!("Failed to create config dir: {}", e))?;
 
     let config_path = mdedit_dir.join("config.toml");
-    let contents = toml::to_string_pretty(config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let contents =
+        toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    std::fs::write(&config_path, contents)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    std::fs::write(&config_path, contents).map_err(|e| format!("Failed to write config: {}", e))?;
 
     Ok(config_path.display().to_string())
 }

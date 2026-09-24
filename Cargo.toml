@@ -15,12 +15,12 @@ toml = "0.8"
 dirs = "6"
 unicode-width = "0.2"
 pulldown-cmark = { version = "0.13", features = ["simd"] }
-tui-markdown = "0.3.7"
+unicode-segmentation = "1.12"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 regex = "1"
 
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

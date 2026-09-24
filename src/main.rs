@@ -1,11 +1,18 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, EnableBracketedPaste, DisableBracketedPaste};
+use crossterm::cursor::Show;
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::stdout;
+#[allow(deprecated)]
+use std::panic::PanicInfo;
 use std::path::PathBuf;
 
 mod app;
@@ -35,7 +42,72 @@ struct Cli {
     mode: Option<String>,
 }
 
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableBracketedPaste
+        )?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(
+        stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
+}
+
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        restore_terminal();
+
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let message = panic_payload(info);
+        let backtrace = std::backtrace::Backtrace::force_capture();
+
+        let report = format!("mdedit panicked at {location}\n{message}\n\n{backtrace}\n");
+        let log_path = std::env::temp_dir().join("mdedit-panic.log");
+        let _ = std::fs::write(&log_path, &report);
+
+        eprintln!("{report}");
+        eprintln!("Crash log written to {}", log_path.display());
+    }));
+}
+
+#[allow(deprecated)]
+fn panic_payload(info: &PanicInfo<'_>) -> String {
+    if let Some(message) = info.payload().downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = info.payload().downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic payload was not a string".to_string()
+    }
+}
+
 fn main() -> Result<()> {
+    install_panic_hook();
+
     let cli = Cli::parse();
 
     // Load config from ~/.config/mdedit/config.toml (defaults if missing)
@@ -69,21 +141,12 @@ fn main() -> Result<()> {
         None
     };
 
-    // Manual terminal init with mouse capture (D-18)
-    enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
-    let backend = CrosstermBackend::new(stdout);
+    // Manual terminal init with panic-safe cleanup.
+    let _session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let clipboard = clipboard::detect_provider();
     let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode, clipboard, cfg);
-    let result = app.run(&mut terminal);
-
-    // Cleanup: disable mouse, leave alternate screen, disable raw mode
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
-    result
+    app.run(&mut terminal)
 }

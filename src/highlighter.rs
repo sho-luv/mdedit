@@ -316,7 +316,7 @@ fn block_line(line: &str, st: &Styles, out: &mut Vec<Span<'static>>) {
     // Thematic break / setext underline: `---`, `***`, `===`
     if trimmed.len() >= 3
         && indent <= 3
-        && [b'-', b'*', b'_', b'=']
+        && b"-*_="
             .iter()
             .any(|&c| trimmed.bytes().all(|b| b == c || b == b' ') && trimmed.as_bytes()[0] == c)
     {

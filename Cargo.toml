@@ -7,7 +7,7 @@ rust-version = "1.75"
 [dependencies]
 ratatui = { version = "0.30", features = ["crossterm", "unstable-rendered-line-info"] }
 crossterm = "0.29"
-ratatui-textarea = { version = "0.8", features = ["crossterm", "search"] }
+ratatui-textarea = { version = "0.9", features = ["crossterm", "search"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

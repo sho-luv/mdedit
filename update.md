@@ -18,7 +18,9 @@
 - Editor wraps at word boundaries and word wrap is on by default. Preview: reading column centered in wide panes, bare URLs linked, images marked, clean callouts without emoji.
 - Config now lives at `~/.config/mdedit/config.toml` on every platform (legacy macOS location still honored). Added `--version`, `:help`, `:noh`, plain-language file errors, and saves that keep permissions and symlinks. Better 256-color fallback and truecolor detection.
 - **Live view** (new default, `--view live`, Ctrl+P cycles): edit inside the rendered document, glow-style. The document is drawn from the preview's rendered rows; the block under the cursor or selection (paragraph, heading, list item, code block, table) is swapped for its raw, highlighted source and re-renders when the cursor leaves. Renderer now reports top-level block spans (source lines <-> rows); `src/live.rs` composes the view and maps clicks. 0.17ms per cursor move and 0.3ms per keystroke on a 5,200-line file.
-- 52 tests (was 36), fmt/clippy (-D warnings)/test green.
+- Security review: save now creates its temp file exclusively and private (it briefly exposed private files and would write through a planted symlink); crash log moved from the shared temp dir to the user's cache dir; dependencies updated and unused syntect features dropped (`cargo audit`: 4 advisories -> 0); installer verifies `SHA256SUMS` (published by the release workflow from the next release on); CI audits dependencies on push and weekly; Dependabot added. Test proves control characters in a document never reach the terminal.
+- README rewritten around the live view; demo GIFs and MP4 re-recorded from the current build with VHS (`demo/demo.tape`, `demo/screenshots/*.tape`, sample doc `demo/sample.md`).
+- 55 tests (was 36), fmt/clippy (-D warnings)/test green.
 
 ### 2026-09-24
 - Rewrote the preview pipeline for speed and exact alignment. Per-frame work on a 5,200-line file dropped from ~100ms to ~0.1ms; editor syntax highlighting from ~75ms/keystroke to ~1.2ms.

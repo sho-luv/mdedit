@@ -1,100 +1,62 @@
+# The settings panel (F2 or :set): themes and preview styles, applied live.
+#   cargo build --release && vhs demo/screenshots/settings.tape
 Output demo/screenshots/settings.gif
 
-Set Shell "zsh"
-Set FontSize 16
+Set Shell "bash"
+Set FontSize 15
 Set Width 1200
-Set Height 700
-Set Padding 10
-Set Theme "Dracula"
-Set TypingSpeed 50ms
+Set Height 720
+Set Padding 12
+Set TypingSpeed 45ms
 
-# Create a sample file
+Env HOME "/tmp/mdedit-demo"
+Env COLORTERM "truecolor"
+
 Hide
-Type "cat << 'EOF' > /tmp/settings-demo.md"
+Type 'mkdir -p /tmp/mdedit-demo && cp demo/sample.md /tmp/mdedit-demo/notes.md && export PATH="$PWD/target/release:$PATH" && cd /tmp/mdedit-demo && clear'
 Enter
-Type "# Theme Demo"
-Enter
-Type ""
-Enter
-Type "This shows the **live settings panel** in mdedit."
-Enter
-Type ""
-Enter
-Type "## Features"
-Enter
-Type ""
-Enter
-Type "- Switch themes on the fly"
-Enter
-Type "- Choose render profiles"
-Enter
-Type "- Toggle sync indicator"
-Enter
-Type "- Save your preferences"
-Enter
-Type "EOF"
-Enter
-Show
-
-# Open mdedit
-Type "mdedit /tmp/settings-demo.md"
+Sleep 500ms
+Type "mdedit --view split notes.md"
 Enter
 Sleep 1.5s
+Type "jjjjjjjjjj"
+Sleep 300ms
+Show
+Sleep 1s
 
 # Open settings
 Type ":set"
+Sleep 400ms
 Enter
 Sleep 1.5s
 
-# Cycle through themes
+# Cycle themes
 Right
-Sleep 1s
+Sleep 1.4s
 Right
-Sleep 1s
+Sleep 1.4s
 Right
-Sleep 1s
+Sleep 1.4s
+Right
+Sleep 1.2s
 
-# Navigate to Profile
+# Down to "Preview style" and cycle the render profiles
 Down
-Sleep 500ms
+Sleep 400ms
 Down
-Sleep 500ms
-
-# Cycle profiles
+Sleep 600ms
 Right
-Sleep 1s
+Sleep 1.4s
 Right
-Sleep 1s
-
-# Navigate to Sync Line
-Down
-Sleep 500ms
-
-# Toggle sync indicator
+Sleep 1.4s
 Right
-Sleep 1s
-Left
-Sleep 1s
+Sleep 1.4s
+Right
+Sleep 1.2s
 
-# Go back to theme
-Up
-Sleep 300ms
-Up
-Sleep 300ms
-Up
-Sleep 300ms
-
-# Back to ocean
-Left
-Sleep 0.5s
-Left
-Sleep 0.5s
-Left
-Sleep 1s
-
-# Close and quit
 Escape
-Sleep 0.5s
-Type ":q"
+Sleep 1s
+
+Hide
+Type ":q!"
 Enter
-Sleep 500ms

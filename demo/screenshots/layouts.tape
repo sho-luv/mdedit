@@ -1,74 +1,47 @@
+# The four views, cycled with Ctrl+P: live, split, editor only, preview only.
+#   cargo build --release && vhs demo/screenshots/layouts.tape
 Output demo/screenshots/layouts.gif
 
-Set Shell "zsh"
-Set FontSize 16
+Set Shell "bash"
+Set FontSize 15
 Set Width 1200
-Set Height 700
-Set Padding 10
-Set Theme "Dracula"
-Set TypingSpeed 50ms
+Set Height 720
+Set Padding 12
+Set TypingSpeed 45ms
 
-# Create a sample file
+Env HOME "/tmp/mdedit-demo"
+Env COLORTERM "truecolor"
+
 Hide
-Type "cat << 'EOF' > /tmp/layout-demo.md"
+Type 'mkdir -p /tmp/mdedit-demo && cp demo/sample.md /tmp/mdedit-demo/notes.md && export PATH="$PWD/target/release:$PATH" && cd /tmp/mdedit-demo && clear'
 Enter
-Type "# Layout Modes"
+Sleep 500ms
+Type "mdedit notes.md"
 Enter
-Type ""
-Enter
-Type "Use **Ctrl+P** to cycle through layouts."
-Enter
-Type ""
-Enter
-Type "## Split View"
-Enter
-Type "Editor on the left, preview on the right."
-Enter
-Type ""
-Enter
-Type "## Editor Only"
-Enter
-Type "Full screen editing when you need focus."
-Enter
-Type ""
-Enter
-Type "## Preview Only"
-Enter
-Type "Read your rendered markdown full screen."
-Enter
-Type ""
-Enter
-Type '```python'
-Enter
-Type 'def hello():'
-Enter
-Type '    print("Hello from mdedit!")'
-Enter
-Type '```'
-Enter
-Type "EOF"
-Enter
+Sleep 1.5s
+Type "jjjjjjjjjj"
+Sleep 300ms
 Show
 
-Type "mdedit /tmp/layout-demo.md"
-Enter
-Sleep 2s
+# Live view (default)
+Sleep 2.2s
 
-# Split view (default)
-Sleep 1s
+# Split view
+Ctrl+p
+Sleep 2.2s
 
 # Editor only
 Ctrl+p
-Sleep 1.5s
+Sleep 2.2s
 
 # Preview only
 Ctrl+p
-Sleep 1.5s
+Sleep 2.2s
 
-# Back to split
+# Back to live
 Ctrl+p
-Sleep 1.5s
+Sleep 2s
 
-Type ":q"
+Hide
+Type ":q!"
 Enter
-Sleep 500ms

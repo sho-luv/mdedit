@@ -1,164 +1,71 @@
-# mdedit demo - terminal markdown editor with live preview
+# mdedit main demo: live view (edit inside the rendered document), then split view.
+# Records the local release build with default settings:
+#   cargo build --release && vhs demo/demo.tape
 Output demo/mdedit-demo.gif
+Output demo/mdedit-demo.mp4
 
-Set Shell "zsh"
-Set FontSize 14
-Set Width 1400
-Set Height 800
-Set Padding 10
-Set Theme "Dracula"
-Set TypingSpeed 50ms
+Set Shell "bash"
+Set FontSize 15
+Set Width 1200
+Set Height 720
+Set Padding 12
+Set TypingSpeed 45ms
 
-# Create a sample markdown file
+# Fresh HOME so the recording uses default settings, not a saved config
+Env HOME "/tmp/mdedit-demo"
+Env COLORTERM "truecolor"
+
 Hide
-Type "cat << 'EOF' > /tmp/demo.md"
+Type 'mkdir -p /tmp/mdedit-demo && cp demo/sample.md /tmp/mdedit-demo/notes.md && export PATH="$PWD/target/release:$PATH" && cd /tmp/mdedit-demo && clear'
 Enter
-Type "# Welcome to mdedit"
-Enter
-Type ""
-Enter
-Type "A terminal markdown editor with **live preview**."
-Enter
-Type ""
-Enter
-Type "## Features"
-Enter
-Type ""
-Enter
-Type "- Side-by-side editing"
-Enter
-Type "- Vim keybindings"
-Enter
-Type "- Syntax highlighting"
-Enter
-Type "- Render profiles (GitHub, Obsidian, CommonMark)"
-Enter
-Type ""
-Enter
-Type "## Code Example"
-Enter
-Type ""
-Enter
-Type '```rust'
-Enter
-Type 'fn main() {'
-Enter
-Type '    println!("Hello, mdedit!");'
-Enter
-Type '}'
-Enter
-Type '```'
-Enter
-Type ""
-Enter
-Type "| Feature | mdedit | VS Code |"
-Enter
-Type "|---------|--------|---------|"
-Enter
-Type "| Terminal | Yes | No |"
-Enter
-Type "| SSH | Yes | No |"
-Enter
-Type "| Startup | <50ms | 3s+ |"
-Enter
-Type ""
-Enter
-Type "> [!NOTE]"
-Enter
-Type "> Callouts render with colored borders and icons."
-Enter
-Type ""
-Enter
-Type "> Edit markdown. See it rendered. In your terminal."
-Enter
-Type "EOF"
-Enter
+Sleep 500ms
 Show
 
-# Open mdedit
-Type "mdedit /tmp/demo.md"
+Type "mdedit notes.md"
+Sleep 400ms
 Enter
-Sleep 2s
+Sleep 2.5s
 
-# Navigate down to show content and sync indicator
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 2s
+# Move through the document: the block under the cursor opens as raw markdown
+Type "jj"
+Sleep 1.3s
+Type "jjjjj"
+Sleep 1.3s
+Type "jjjjjj"
+Sleep 1.6s
 
-# Go back to top
-Type "gg"
-Sleep 1s
-
-# Enter insert mode and add text
-Type "G"
+# Edit a task in place
+Type "jjjjjjjjjj"
+Sleep 900ms
+Type "A"
+Type " (with reminders)"
+Sleep 600ms
+Escape
 Sleep 500ms
+
+# Move into the table: the task renders again, the table opens
+Type "jjjjj"
+Sleep 1.4s
+
+# Add a row
 Type "o"
-Sleep 300ms
-Type "- [x] Task lists work too!"
-Sleep 1s
-
-# Back to normal mode
+Type "| Faro | 1 | Beach day |"
+Sleep 500ms
 Escape
-Sleep 1s
-
-# Open settings panel
-Type ":set"
-Enter
-Sleep 1.5s
-
-# Navigate to Preview profile
-Down
-Sleep 500ms
-Down
 Sleep 500ms
 
-# Cycle through profiles
-Right
-Sleep 1s
-Right
-Sleep 1s
-Left
-Sleep 1s
-Left
-Sleep 1s
+# Back to the top: everything is rendered, including the new row
+Type "gg"
+Sleep 2.2s
 
-# Close settings
-Escape
-Sleep 1s
-
-# Save
-Type ":w"
-Enter
-Sleep 1s
-
-# Toggle layout modes
+# Split view: raw editor and rendered preview side by side
 Ctrl+p
-Sleep 1.5s
-Ctrl+p
-Sleep 1.5s
-Ctrl+p
-Sleep 1.5s
+Sleep 1.4s
+Type "jjjjjjjjjjjj"
+Sleep 2s
 
-# Quit
-Type ":q"
-Enter
+# Save and quit
+Type ":wq"
 Sleep 500ms
+Enter
+Sleep 600ms

@@ -96,12 +96,35 @@ fn install_panic_hook() {
         let backtrace = std::backtrace::Backtrace::force_capture();
 
         let report = format!("mdedit panicked at {location}\n{message}\n\n{backtrace}\n");
-        let log_path = std::env::temp_dir().join("mdedit-panic.log");
-        let _ = std::fs::write(&log_path, &report);
-
         eprintln!("{report}");
-        eprintln!("Crash log written to {}", log_path.display());
+        if let Some(log_path) = write_crash_log(&report) {
+            eprintln!("Crash log written to {}", log_path.display());
+        }
     }));
+}
+
+/// Write the crash report to the user's own cache directory
+/// (`~/Library/Caches/mdedit` or `~/.cache/mdedit`), readable only by them.
+/// A fixed name in the shared temp directory would let another local user
+/// pre-create it as a symlink and redirect the write.
+fn write_crash_log(report: &str) -> Option<PathBuf> {
+    use std::io::Write;
+    let dir = dirs::cache_dir()?.join("mdedit");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("panic.log");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&path)
+        .ok()?
+        .write_all(report.as_bytes())
+        .ok()?;
+    Some(path)
 }
 
 #[allow(deprecated)]

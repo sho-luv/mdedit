@@ -3341,4 +3341,40 @@ mod tests {
         click(&mut app, 10, row);
         assert_eq!(app.editor.cursor_position().0, 4);
     }
+
+    /// A document is untrusted input: control characters in it (ESC, BEL,
+    /// CSI/OSC introducers) must never reach the terminal, or opening a file
+    /// could rewrite the clipboard, the window title, or the screen.
+    #[test]
+    fn control_characters_in_a_document_never_reach_the_terminal() {
+        let hostile = "# Title \x1b]52;c;ZXZpbA==\x07 end\n\n\
+                       text \x1b[2J\x1b[31m red \u{9b}31m \u{9d}0;pwned\u{9c} \x07\x08\x7f\n\n\
+                       - item \x1b]0;title\x07\n\n\
+                       ```sh\necho \x1b[5m blink\n```\n\n\
+                       | a \x1b[1m | b |\n|---|---|\n| c \x1b]8;;http://x\x07 | d |\n";
+        for view in [
+            LayoutMode::Live,
+            LayoutMode::Split,
+            LayoutMode::EditorOnly,
+            LayoutMode::PreviewOnly,
+        ] {
+            let mut app = vim_app(hostile);
+            app.layout_mode = view;
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            // Visit every line so each block is shown both raw and rendered,
+            // and put the hostile text in the search prompt too.
+            for step in ["", "j", "j", "j", "j", "j", "j", "j", "j", "/\x1b[2J", "\n"] {
+                keys(&mut app, step);
+                terminal.draw(|f| app.render(f)).unwrap();
+                let buf = terminal.backend().buffer();
+                for cell in buf.content() {
+                    assert!(
+                        !cell.symbol().chars().any(char::is_control),
+                        "control char {:?} reached the screen in {view:?}",
+                        cell.symbol()
+                    );
+                }
+            }
+        }
+    }
 }

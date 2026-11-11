@@ -16,12 +16,14 @@ use crate::editor::{Editor, EditorAction};
 use crate::file_io;
 use crate::markdown::{MarkdownRenderer, PreviewRenderer, RenderResult};
 use crate::preview::Preview;
-use crate::status_bar::{StatusBar, StatusBarContent};
+use crate::status_bar::{Prompt, StatusBar, StatusBarContent};
 use crate::vim::{InsertPosition, Motion, VimCommand, VimHandler};
 
 /// Layout mode — controls how the main area is split (D-11, D-12, D-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutMode {
+    /// Edit inside the rendered document (see `crate::live`).
+    Live,
     Split,
     EditorOnly,
     PreviewOnly,
@@ -30,14 +32,16 @@ pub enum LayoutMode {
 impl LayoutMode {
     pub fn next(self) -> Self {
         match self {
+            Self::Live => Self::Split,
             Self::Split => Self::EditorOnly,
             Self::EditorOnly => Self::PreviewOnly,
-            Self::PreviewOnly => Self::Split,
+            Self::PreviewOnly => Self::Live,
         }
     }
 
     pub fn label(&self) -> &str {
         match self {
+            Self::Live => "Live View",
             Self::Split => "Split View",
             Self::EditorOnly => "Editor Only",
             Self::PreviewOnly => "Preview Only",
@@ -100,6 +104,63 @@ enum SettingsRow {
     Reset,
 }
 
+/// Everything needed to render the preview off the main thread.
+#[derive(Clone)]
+struct PreviewJob {
+    content: String,
+    profile: crate::config::RenderProfile,
+    theme: crate::theme::Theme,
+    width: u16,
+}
+
+/// A finished render: the document (or the panic message), the width it was
+/// laid out for, and how long it took.
+type PreviewOutcome = (Result<RenderResult, String>, u16, Duration);
+
+impl PreviewJob {
+    /// Render, containing any renderer panic so a bad document can never
+    /// take the editor down.
+    fn run(self) -> PreviewOutcome {
+        let started = Instant::now();
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            PreviewRenderer.render(&self.content, self.profile, &self.theme, self.width)
+        }))
+        .map_err(panic_message);
+        (outcome, self.width, started.elapsed())
+    }
+}
+
+/// Handle to the background thread that renders preview jobs.
+struct PreviewWorker {
+    jobs: std::sync::mpsc::Sender<PreviewJob>,
+    results: std::sync::mpsc::Receiver<PreviewOutcome>,
+    in_flight: bool,
+}
+
+impl PreviewWorker {
+    /// Start the render thread. It exits when the `App` (the job sender) is
+    /// dropped. Returns `None` if the thread can't be spawned.
+    fn spawn() -> Option<Self> {
+        let (jobs, job_rx) = std::sync::mpsc::channel::<PreviewJob>();
+        let (result_tx, results) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("mdedit-preview".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    if result_tx.send(job.run()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(PreviewWorker {
+            jobs,
+            results,
+            in_flight: false,
+        })
+    }
+}
+
 /// Top-level application struct owning the editor and managing the event loop.
 pub struct App<'a> {
     editor: Editor<'a>,
@@ -115,14 +176,20 @@ pub struct App<'a> {
     layout_mode: LayoutMode,
     /// Preview component managing scroll state.
     preview: Preview,
-    /// Markdown renderer (abstracted behind trait for replaceability).
-    renderer: PreviewRenderer,
+    /// Live view (rendered document with the cursor's block shown raw).
+    live: crate::live::LiveView,
     /// Cached preview, laid out for the current preview pane width. Carries
     /// the exact source-line <-> row maps used for scroll sync.
     preview_doc: RenderResult,
     /// How long the last preview render took; small documents skip the
     /// debounce and update on every keystroke.
     last_render_cost: Duration,
+    /// Cached word count for the status bar (`None` = recount needed).
+    word_count: Option<usize>,
+    /// Background preview renderer (`None` = render synchronously).
+    preview_worker: Option<PreviewWorker>,
+    /// Pane width of the most recently requested preview render.
+    preview_requested_width: Option<u16>,
     /// Flag: content changed since last preview render.
     content_dirty: bool,
     /// Timestamp of last edit (for debounce).
@@ -209,11 +276,19 @@ impl<'a> App<'a> {
             filename_input: String::new(),
             status_bar: StatusBar::new(),
             quit_after_save: false,
-            layout_mode: LayoutMode::Split, // D-11: default to split
+            layout_mode: match config.view {
+                crate::config::StartView::Live => LayoutMode::Live,
+                crate::config::StartView::Split => LayoutMode::Split,
+                crate::config::StartView::Editor => LayoutMode::EditorOnly,
+                crate::config::StartView::Preview => LayoutMode::PreviewOnly,
+            },
+            live: crate::live::LiveView::new(),
             preview: Preview::new(),
-            renderer: PreviewRenderer,
             preview_doc: RenderResult::empty(),
             last_render_cost: Duration::ZERO,
+            word_count: None,
+            preview_worker: None,
+            preview_requested_width: None,
             content_dirty: true, // Render initial content on first frame
             last_edit_time: Some(Instant::now()),
             search_query: String::new(),
@@ -283,10 +358,19 @@ impl<'a> App<'a> {
         self.preview.set_scroll(offset.min(max_scroll));
     }
 
+    /// Render the preview on a background thread from now on, so neither
+    /// startup nor typing ever waits on markdown rendering. Without this
+    /// (tests), rendering is synchronous.
+    pub fn enable_background_preview(&mut self) {
+        self.preview_worker = PreviewWorker::spawn();
+    }
+
     /// How long to wait after the last edit before re-rendering the preview.
-    /// Cheap documents render immediately; expensive ones are debounced (D-04).
+    /// With the background worker there is no wait: an in-flight render
+    /// already coalesces bursts of edits. Synchronous rendering debounces
+    /// documents that are expensive to render (D-04).
     fn preview_debounce(&self) -> Duration {
-        if self.last_render_cost < Duration::from_millis(8) {
+        if self.preview_worker.is_some() || self.last_render_cost < Duration::from_millis(8) {
             Duration::ZERO
         } else {
             Duration::from_millis(80)
@@ -305,26 +389,16 @@ impl<'a> App<'a> {
         })
     }
 
-    /// Re-render the preview when content changed (after the debounce) or the
-    /// pane width changed. Called during render with the actual pane width.
-    fn refresh_preview(&mut self, width: u16) {
-        let content_due = self.preview_due_in() == Some(Duration::ZERO);
-        let width_changed = self.preview_doc.width != width;
-        if !content_due && !width_changed {
-            return;
-        }
+    /// Whether a background preview render is running.
+    fn preview_in_flight(&self) -> bool {
+        self.preview_worker.as_ref().is_some_and(|w| w.in_flight)
+    }
 
-        let started = Instant::now();
-        let content = self.editor.content();
-        let render_result = catch_unwind(AssertUnwindSafe(|| {
-            self.renderer
-                .render(&content, self.config.render_profile, &self.theme, width)
-        }));
-
-        match render_result {
+    /// Install a finished preview render (or report its failure).
+    fn apply_preview(&mut self, outcome: Result<RenderResult, String>, width: u16) {
+        match outcome {
             Ok(doc) => self.preview_doc = doc,
-            Err(payload) => {
-                let message = panic_message(payload);
+            Err(message) => {
                 let mut doc = RenderResult::message(&["Preview render failed", &message]);
                 doc.width = width;
                 self.preview_doc = doc;
@@ -333,9 +407,63 @@ impl<'a> App<'a> {
                     .set_message("Preview render failed; editor still available");
             }
         }
-        self.last_render_cost = started.elapsed();
+    }
+
+    /// Keep the preview up to date: collect a finished background render,
+    /// and start a new one when content changed (after the debounce) or the
+    /// pane width changed. Called during render with the actual pane width.
+    fn refresh_preview(&mut self, width: u16) {
+        if let Some(worker) = self.preview_worker.as_mut() {
+            if let Ok((outcome, rendered_width, cost)) = worker.results.try_recv() {
+                worker.in_flight = false;
+                self.last_render_cost = cost;
+                self.apply_preview(outcome, rendered_width);
+            }
+        }
+
+        let content_due = self.preview_due_in() == Some(Duration::ZERO);
+        let width_changed = self.preview_requested_width != Some(width);
+        self.preview.show_empty_hint = !self.preview_in_flight();
+        if (!content_due && !width_changed) || self.preview_in_flight() {
+            // Nothing to do, or a render is running: whatever is still
+            // dirty is picked up on a later frame.
+            return;
+        }
+
+        let job = PreviewJob {
+            content: self.editor.content(),
+            profile: self.config.render_profile,
+            theme: self.theme.clone(),
+            width,
+        };
+        let first_render = self.preview_requested_width.is_none();
+        self.preview_requested_width = Some(width);
         self.content_dirty = false;
         self.last_edit_time = None;
+
+        match self.preview_worker.as_mut() {
+            Some(worker) if worker.jobs.send(job.clone()).is_ok() => {
+                worker.in_flight = true;
+                // The live view is the rendered document, so the very first
+                // frame waits (briefly) for it instead of flashing raw text.
+                if first_render && self.layout_mode == LayoutMode::Live {
+                    if let Ok((outcome, rendered_width, cost)) =
+                        worker.results.recv_timeout(Duration::from_millis(150))
+                    {
+                        worker.in_flight = false;
+                        self.last_render_cost = cost;
+                        self.apply_preview(outcome, rendered_width);
+                    }
+                }
+            }
+            _ => {
+                // No worker (tests), or it died: render right here.
+                self.preview_worker = None;
+                let (outcome, width, cost) = job.run();
+                self.last_render_cost = cost;
+                self.apply_preview(outcome, width);
+            }
+        }
     }
 
     /// Main event loop. Draws the UI and processes events until quit.
@@ -346,11 +474,11 @@ impl<'a> App<'a> {
         loop {
             terminal.draw(|frame| self.render(frame))?;
 
-            // Sleep until input arrives, a debounced preview render is due,
-            // highlighting has more visible lines to catch up on, or a periodic
-            // tick (lets timed status messages expire).
-            let timeout = if self.editor.highlight_pending() {
-                Duration::from_millis(1)
+            // Sleep until input arrives, a preview render is due or finishing,
+            // or a periodic tick (lets timed status messages expire).
+            let timeout = if self.preview_in_flight() {
+                // Check back soon for the finished render.
+                Duration::from_millis(4)
             } else {
                 self.preview_due_in()
                     .unwrap_or(Duration::from_millis(250))
@@ -408,7 +536,8 @@ impl<'a> App<'a> {
                         AppMode::Insert | AppMode::Editing => Some(SetCursorStyle::SteadyBar),
                         _ => None, // ConfirmQuit, PromptFilename, Search keep current
                     };
-                    if let Some(style) = style {
+                    // (Skipped under test, where stdout isn't a terminal.)
+                    if let (Some(style), false) = (style, cfg!(test)) {
                         let _ = crossterm::execute!(std::io::stdout(), style);
                     }
                 }
@@ -511,10 +640,7 @@ impl<'a> App<'a> {
                         self.should_quit = true;
                     }
                 }
-                EditorAction::ContentChanged => {
-                    self.content_dirty = true;
-                    self.last_edit_time = Some(Instant::now());
-                }
+                EditorAction::ContentChanged => self.mark_content_changed(),
             }
         }
     }
@@ -750,6 +876,19 @@ impl<'a> App<'a> {
                 self.search_query.clear();
                 self.return_to_editing_mode();
             }
+            // Vim: Enter accepts the search and returns to Normal mode, where
+            // n / N step through matches (highlights stay until Esc).
+            KeyCode::Enter if self.vim_handler.is_some() => {
+                if self.search_match_count == 0 {
+                    if !self.search_query.is_empty() {
+                        self.status_bar
+                            .set_message(&format!("Pattern not found: {}", self.search_query));
+                    }
+                    let _ = self.editor.textarea_mut().set_search_pattern("");
+                    self.search_query.clear();
+                }
+                self.mode = AppMode::Normal;
+            }
             KeyCode::Enter => {
                 if self.search_match_count > 0 {
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
@@ -843,11 +982,7 @@ impl<'a> App<'a> {
 
     /// Return the current search query if in search mode, empty string otherwise.
     pub fn current_search_query(&self) -> &str {
-        if self.mode == AppMode::Search && !self.search_query.is_empty() {
-            &self.search_query
-        } else {
-            ""
-        }
+        &self.search_query
     }
 
     /// Write text to both the internal vim yank register and the system clipboard.
@@ -867,6 +1002,8 @@ impl<'a> App<'a> {
 
     /// Mark content as changed (sets dirty flag and edit timestamp).
     fn mark_content_changed(&mut self) {
+        self.editor.mark_modified();
+        self.word_count = None;
         self.content_dirty = true;
         self.last_edit_time = Some(Instant::now());
     }
@@ -1417,6 +1554,13 @@ impl<'a> App<'a> {
                     self.mode = AppMode::PromptFilename;
                 }
             }
+            "help" | "h" => {
+                self.show_help = true;
+            }
+            "noh" | "nohlsearch" => {
+                let _ = self.editor.textarea_mut().set_search_pattern("");
+                self.search_query.clear();
+            }
             other if other.starts_with("set ") || other == "set" => {
                 self.execute_set_command(other);
             }
@@ -1563,6 +1707,12 @@ impl<'a> App<'a> {
             return;
         }
 
+        // Esc in Normal mode clears lingering search highlights (like :noh)
+        if key.code == KeyCode::Esc && !self.search_query.is_empty() {
+            let _ = self.editor.textarea_mut().set_search_pattern("");
+            self.search_query.clear();
+        }
+
         let cmd = self
             .vim_handler
             .as_mut()
@@ -1689,6 +1839,19 @@ impl<'a> App<'a> {
                     }
                 }
 
+                // Live view: click places the cursor (opening that block)
+                if self.layout_mode == LayoutMode::Live {
+                    if let Some((line, char_col)) =
+                        self.live.click(col, row, &self.preview_doc, &self.editor)
+                    {
+                        self.editor.textarea_mut().cancel_selection();
+                        self.editor
+                            .textarea_mut()
+                            .move_cursor(CursorMove::Jump(line as u16, char_col as u16));
+                    }
+                    return;
+                }
+
                 // Check if click is on divider (D-22)
                 if let Some(div) = self.divider_area {
                     if col >= div.x
@@ -1780,6 +1943,19 @@ impl<'a> App<'a> {
                 }
                 self.dragging_divider = false;
                 self.drag_selecting = false;
+            }
+
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self.layout_mode == LayoutMode::Live =>
+            {
+                let step = if mouse.kind == MouseEventKind::ScrollUp {
+                    CursorMove::Up
+                } else {
+                    CursorMove::Down
+                };
+                for _ in 0..3 {
+                    self.editor.textarea_mut().move_cursor(step);
+                }
             }
 
             MouseEventKind::ScrollUp => {
@@ -1874,6 +2050,15 @@ impl<'a> App<'a> {
         let search_query = self.current_search_query().to_string();
         self.button_areas.clear();
 
+        // Themes with their own background paint the whole screen; others
+        // (ocean) sit on the terminal's background.
+        if let Some(bg) = self.theme.editor_bg {
+            let area = frame.area();
+            frame
+                .buffer_mut()
+                .set_style(area, Style::default().bg(bg).fg(self.theme.preview_fg));
+        }
+
         match self.layout_mode {
             LayoutMode::Split => {
                 let chunks = Layout::default()
@@ -1904,6 +2089,8 @@ impl<'a> App<'a> {
                 self.editor_area = Some(editor_inner);
                 self.editor
                     .render_highlighted(frame, editor_inner, &search_query);
+                let (total, top) = self.editor.scroll_metrics();
+                self.render_scrollbar(frame, editor_outer, total, top, editor_focused);
 
                 // Preview panel (right) — carries the title-bar buttons
                 let preview_title = self.preview_title(!editor_focused);
@@ -1931,6 +2118,32 @@ impl<'a> App<'a> {
                     &self.theme,
                     highlight,
                 );
+                self.render_scrollbar(
+                    frame,
+                    preview_outer,
+                    self.preview_doc.rows.len(),
+                    self.preview.scroll_offset(),
+                    !editor_focused,
+                );
+            }
+            LayoutMode::Live => {
+                self.split_body_area = None;
+                self.divider_area = None;
+                self.editor_area = None;
+                self.preview_area = None;
+                let title = self.editor_title(true);
+                let inner = self.render_panel(frame, body_area, title, true, true);
+                self.refresh_preview(crate::live::LiveView::content_width(inner));
+                self.live.render(
+                    frame,
+                    inner,
+                    &self.preview_doc,
+                    &self.editor,
+                    &self.theme,
+                    &search_query,
+                );
+                let (total, top) = self.live.scroll_metrics();
+                self.render_scrollbar(frame, body_area, total, top, true);
             }
             LayoutMode::EditorOnly => {
                 self.split_body_area = None;
@@ -1940,6 +2153,8 @@ impl<'a> App<'a> {
                 let inner = self.render_panel(frame, body_area, title, true, true);
                 self.editor_area = Some(inner);
                 self.editor.render_highlighted(frame, inner, &search_query);
+                let (total, top) = self.editor.scroll_metrics();
+                self.render_scrollbar(frame, body_area, total, top, true);
             }
             LayoutMode::PreviewOnly => {
                 self.split_body_area = None;
@@ -1951,132 +2166,17 @@ impl<'a> App<'a> {
                 self.refresh_preview(inner.width);
                 self.preview
                     .render(frame, inner, &self.preview_doc, &self.theme, None);
+                self.render_scrollbar(
+                    frame,
+                    body_area,
+                    self.preview_doc.rows.len(),
+                    self.preview.scroll_offset(),
+                    true,
+                );
             }
         }
 
-        // Render status bar based on current mode
-        match self.mode {
-            AppMode::Editing | AppMode::Normal | AppMode::Insert | AppMode::Visual => {
-                let preview_focused = self.focused_pane == FocusedPane::Preview
-                    && self.layout_mode != LayoutMode::EditorOnly;
-                type Hints = &'static [(&'static str, &'static str)];
-                let (vim_mode, hints): (Option<(&str, ratatui::style::Color)>, Hints) =
-                    match self.mode {
-                        AppMode::Editing if preview_focused => {
-                            (None, &[("↑↓", "scroll"), ("Esc", "editor"), ("F1", "help")])
-                        }
-                        AppMode::Editing => (
-                            None,
-                            &[
-                                ("^S", "save"),
-                                ("^F", "find"),
-                                ("^P", "view"),
-                                ("F1", "help"),
-                                ("^Q", "quit"),
-                            ],
-                        ),
-                        AppMode::Normal if preview_focused => (
-                            Some(("-- NORMAL --", self.theme.mode_normal_bg)),
-                            &[("j/k", "scroll"), ("g/G", "top/end"), ("Esc", "editor")],
-                        ),
-                        AppMode::Normal => (
-                            Some(("-- NORMAL --", self.theme.mode_normal_bg)),
-                            &[
-                                ("i", "insert"),
-                                ("v", "visual"),
-                                ("/", "find"),
-                                (":w", "save"),
-                                ("F1", "help"),
-                            ],
-                        ),
-                        AppMode::Insert => (
-                            Some(("-- INSERT --", self.theme.mode_insert_bg)),
-                            &[("Esc", "normal"), ("F1", "help")],
-                        ),
-                        AppMode::Visual => (
-                            Some(("-- VISUAL --", self.theme.mode_visual_bg)),
-                            &[
-                                ("d", "delete"),
-                                ("y", "yank"),
-                                (">", "indent"),
-                                ("Esc", "normal"),
-                            ],
-                        ),
-                        _ => unreachable!(),
-                    };
-                self.status_bar.render(
-                    frame,
-                    status_area,
-                    &self.theme,
-                    StatusBarContent {
-                        filename: self.editor.display_name(),
-                        cursor: self.editor.cursor_position(),
-                        modified: self.editor.is_modified(),
-                        vim_mode,
-                        hints,
-                    },
-                );
-            }
-            AppMode::Command => {
-                let cmd = self
-                    .vim_handler
-                    .as_ref()
-                    .map(|h| h.command_buffer())
-                    .unwrap_or("");
-                let prompt = format!(" :{}_", cmd);
-                let bar = Paragraph::new(Span::raw(prompt)).style(
-                    Style::default()
-                        .bg(self.theme.mode_command_bg)
-                        .fg(self.theme.status_bar_fg),
-                );
-                frame.render_widget(bar, status_area);
-            }
-            AppMode::ConfirmQuit => {
-                let bar = Paragraph::new(Span::raw(" Unsaved changes. Save? (y/n/Esc)")).style(
-                    Style::default()
-                        .bg(self.theme.confirm_bg)
-                        .fg(self.theme.confirm_fg),
-                );
-                frame.render_widget(bar, status_area);
-            }
-            AppMode::PromptFilename => {
-                let prompt = format!(" Save as: {}_", self.filename_input);
-                let bar = Paragraph::new(Span::raw(prompt)).style(
-                    Style::default()
-                        .bg(self.theme.prompt_bg)
-                        .fg(self.theme.prompt_fg),
-                );
-                frame.render_widget(bar, status_area);
-            }
-            AppMode::Search => {
-                let prompt = if self.search_match_count > 0 {
-                    format!(
-                        " Search: {} [{}/{}]",
-                        self.search_query,
-                        self.search_match_index + 1,
-                        self.search_match_count
-                    )
-                } else if self.search_query.is_empty() {
-                    " Search: _".to_string()
-                } else {
-                    format!(" Search: {} [no matches]", self.search_query)
-                };
-                let bar = Paragraph::new(Span::raw(prompt)).style(
-                    Style::default()
-                        .bg(self.theme.prompt_bg)
-                        .fg(self.theme.prompt_fg),
-                );
-                frame.render_widget(bar, status_area);
-            }
-            AppMode::Settings => {
-                // Status bar hint
-                let bar = Paragraph::new(Span::raw(
-                    " Settings: \u{2191}\u{2193} Navigate | \u{2190}\u{2192} Change | Enter Save & Close | Esc Cancel",
-                ))
-                .style(Style::default().bg(self.theme.prompt_bg).fg(self.theme.prompt_fg));
-                frame.render_widget(bar, status_area);
-            }
-        }
+        self.render_status(frame, status_area);
 
         // Settings overlay (rendered on top of everything)
         if self.mode == AppMode::Settings {
@@ -2086,6 +2186,190 @@ impl<'a> App<'a> {
         // Help overlay (topmost)
         if self.show_help {
             self.render_help_overlay(frame, body_area);
+        }
+    }
+
+    /// Render the bottom row: the status line, or the active input prompt.
+    fn render_status(&mut self, frame: &mut Frame, area: Rect) {
+        type Hints = &'static [(&'static str, &'static str)];
+        let theme = &self.theme;
+        let prompt = match self.mode {
+            AppMode::Editing | AppMode::Normal | AppMode::Insert | AppMode::Visual => {
+                let preview_focused = self.focused_pane == FocusedPane::Preview
+                    && self.layout_mode != LayoutMode::EditorOnly;
+                let (mode, hints): (Option<(&str, ratatui::style::Color)>, Hints) = match self.mode
+                {
+                    AppMode::Editing if preview_focused => {
+                        (None, &[("↑↓", "scroll"), ("Esc", "editor"), ("F1", "help")])
+                    }
+                    AppMode::Editing => (
+                        None,
+                        &[
+                            ("^S", "save"),
+                            ("^F", "find"),
+                            ("^P", "view"),
+                            ("F1", "help"),
+                            ("^Q", "quit"),
+                        ],
+                    ),
+                    AppMode::Normal if preview_focused => (
+                        Some(("NORMAL", theme.mode_normal_bg)),
+                        &[("j/k", "scroll"), ("g/G", "top/end"), ("Esc", "editor")],
+                    ),
+                    AppMode::Normal => (
+                        Some(("NORMAL", theme.mode_normal_bg)),
+                        &[
+                            ("i", "insert"),
+                            ("v", "visual"),
+                            ("/", "find"),
+                            (":w", "save"),
+                            ("F1", "help"),
+                        ],
+                    ),
+                    AppMode::Insert => (
+                        Some(("INSERT", theme.mode_insert_bg)),
+                        &[("Esc", "normal"), ("F1", "help")],
+                    ),
+                    _ => (
+                        Some(("VISUAL", theme.mode_visual_bg)),
+                        &[
+                            ("d", "delete"),
+                            ("y", "yank"),
+                            (">", "indent"),
+                            ("Esc", "normal"),
+                        ],
+                    ),
+                };
+                let words = *self.word_count.get_or_insert_with(|| {
+                    self.editor
+                        .widget()
+                        .lines()
+                        .iter()
+                        .map(|l| l.split_whitespace().count())
+                        .sum()
+                });
+                self.status_bar.render(
+                    frame,
+                    area,
+                    &self.theme,
+                    StatusBarContent {
+                        filename: self.editor.display_name(),
+                        cursor: self.editor.cursor_position(),
+                        modified: self.editor.is_modified(),
+                        mode,
+                        hints,
+                        words,
+                    },
+                );
+                return;
+            }
+            AppMode::Command => {
+                let cmd = self
+                    .vim_handler
+                    .as_ref()
+                    .map(|h| h.command_buffer())
+                    .unwrap_or("");
+                (
+                    "COMMAND",
+                    theme.mode_command_bg,
+                    format!(":{}", cmd),
+                    "Enter run \u{00B7} Esc cancel".to_string(),
+                    true,
+                )
+            }
+            AppMode::ConfirmQuit => (
+                "UNSAVED",
+                theme.confirm_bg,
+                "Save changes before quitting?".to_string(),
+                "y save \u{00B7} n discard \u{00B7} Esc cancel".to_string(),
+                false,
+            ),
+            AppMode::PromptFilename => (
+                "SAVE AS",
+                theme.prompt_bg,
+                self.filename_input.clone(),
+                "Enter save \u{00B7} Esc cancel".to_string(),
+                true,
+            ),
+            AppMode::Search => {
+                let enter = if self.vim_handler.is_some() {
+                    "Enter accept"
+                } else {
+                    "Enter next"
+                };
+                let hint = if self.search_match_count > 0 {
+                    format!(
+                        "{}/{} \u{00B7} {} \u{00B7} Esc cancel",
+                        self.search_match_index + 1,
+                        self.search_match_count,
+                        enter
+                    )
+                } else if self.search_query.is_empty() {
+                    "type to search \u{00B7} Esc cancel".to_string()
+                } else {
+                    "no matches \u{00B7} Esc cancel".to_string()
+                };
+                (
+                    "SEARCH",
+                    theme.prompt_bg,
+                    self.search_query.clone(),
+                    hint,
+                    true,
+                )
+            }
+            AppMode::Settings => (
+                "SETTINGS",
+                theme.prompt_bg,
+                String::new(),
+                "\u{2191}\u{2193} select \u{00B7} \u{2190}\u{2192} change \u{00B7} Esc close"
+                    .to_string(),
+                false,
+            ),
+        };
+        let (label, color, text, hint, cursor) = prompt;
+        self.status_bar.render_prompt(
+            frame,
+            area,
+            &self.theme,
+            Prompt {
+                label,
+                color,
+                text: &text,
+                hint: &hint,
+                cursor,
+            },
+        );
+    }
+
+    /// Draw a scrollbar thumb over a panel's right border. Nothing is drawn
+    /// when the content fits.
+    fn render_scrollbar(
+        &self,
+        frame: &mut Frame,
+        panel: Rect,
+        total: usize,
+        offset: usize,
+        focused: bool,
+    ) {
+        let track = usize::from(panel.height.saturating_sub(2));
+        if track < 3 || total <= track || panel.width < 2 {
+            return;
+        }
+        let thumb = (track * track / total).clamp(1, track - 1);
+        let max_offset = total - track;
+        let top = (offset.min(max_offset) * (track - thumb) + max_offset / 2) / max_offset;
+        let color = if focused {
+            self.theme.status_bar_fg
+        } else {
+            self.theme.preview_muted_fg
+        };
+        let x = panel.x + panel.width - 1;
+        let buf = frame.buffer_mut();
+        for i in top..top + thumb {
+            if let Some(cell) = buf.cell_mut((x, panel.y + 1 + i as u16)) {
+                // Half-width block: reads as a thumb, not a second border.
+                cell.set_symbol("\u{2590}").set_fg(color);
+            }
         }
     }
 
@@ -2129,7 +2413,11 @@ impl<'a> App<'a> {
         } else {
             self.theme.divider_fg
         };
-        let modified = if self.editor.is_modified() { " +" } else { "" };
+        let modified = if self.editor.is_modified() {
+            " \u{25CF}"
+        } else {
+            ""
+        };
         ratatui::text::Line::from(Span::styled(
             format!(" {}{} ", self.editor.display_name(), modified),
             Style::default()
@@ -2214,9 +2502,9 @@ impl<'a> App<'a> {
                 ("p P", "paste after / before"),
                 ("x r J", "delete char / replace / join"),
                 ("u ^R", "undo / redo"),
-                ("/ n N", "search / next / previous"),
+                ("/ n N  Esc", "search / next / previous / clear"),
                 (":w :q :wq", "save / quit / save+quit"),
-                (":set", "settings panel"),
+                (":set  :help", "settings panel / this help"),
                 ("^P  F2  ^Q", "cycle view / settings / quit"),
             ]
         } else {
@@ -2238,7 +2526,7 @@ impl<'a> App<'a> {
         ];
 
         let popup_w = 56u16.min(area.width);
-        let popup_h = ((key_rows.len() + mouse_rows.len()) as u16 + 4).min(area.height);
+        let popup_h = ((key_rows.len() + mouse_rows.len()) as u16 + 5).min(area.height);
         if popup_w < 10 || popup_h < 3 {
             return;
         }
@@ -2274,7 +2562,7 @@ impl<'a> App<'a> {
             .add_modifier(ratatui::style::Modifier::BOLD);
         let desc_style = Style::default().fg(self.theme.status_bar_fg);
         let section_style = Style::default()
-            .fg(self.theme.status_bar_fg)
+            .fg(self.theme.preview_muted_fg)
             .add_modifier(ratatui::style::Modifier::BOLD);
 
         let mut lines: Vec<ratatui::text::Line> = Vec::new();
@@ -2292,6 +2580,7 @@ impl<'a> App<'a> {
                 Span::styled(*desc, desc_style),
             ]));
         }
+        lines.push(ratatui::text::Line::default());
         lines.push(ratatui::text::Line::from(Span::styled(
             " mouse & panes",
             section_style,
@@ -2308,155 +2597,137 @@ impl<'a> App<'a> {
 
     /// Render the settings overlay panel centered on screen.
     fn render_settings_overlay(&self, frame: &mut Frame, area: Rect) {
-        use ratatui::widgets::{Block, BorderType, Borders, Clear};
+        use ratatui::style::Modifier;
+        use ratatui::text::Line;
+        use ratatui::widgets::{Block, BorderType, Clear};
 
         let themes = self.theme_names();
         let modes = ["vim", "nano"];
         let profiles = crate::config::RenderProfile::all();
+        let on_off = |on: bool| if on { "on" } else { "off" };
 
-        // Center a box
-        let popup_w = 50u16;
-        let popup_h = 17u16;
-        let x = area.x + area.width.saturating_sub(popup_w) / 2;
-        let y = area.y + area.height.saturating_sub(popup_h) / 2;
-        let popup_area = Rect::new(x, y, popup_w.min(area.width), popup_h.min(area.height));
-
-        // Clear background
-        frame.render_widget(Clear, popup_area);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(self.theme.preview_accent_primary))
-            .title(" settings ")
-            .title_style(
-                Style::default()
-                    .fg(self.theme.preview_accent_primary)
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            )
-            .style(Style::default().bg(self.theme.status_bar_bg));
-        let inner = block.inner(popup_area);
-        frame.render_widget(block, popup_area);
-
-        let normal_style = Style::default()
-            .fg(self.theme.status_bar_fg)
-            .bg(self.theme.status_bar_bg);
-        let selected_style = Style::default()
-            .fg(self.theme.search_active_fg)
-            .bg(self.theme.search_active_bg)
-            .add_modifier(ratatui::style::Modifier::BOLD);
-        let value_style = Style::default()
-            .fg(self.theme.search_active_bg)
-            .bg(self.theme.status_bar_bg);
-
-        let theme_default = if themes[self.settings_theme_index] == "ocean" {
-            " (default)"
-        } else {
-            ""
-        };
-        let mode_default = if self.settings_mode_index == 0 {
-            " (default)"
-        } else {
-            ""
-        };
-        let profile_default = if self.settings_profile_index == 0 {
-            " (default)"
-        } else {
-            ""
-        };
-
-        let sync_label = if self.config.sync_indicator {
-            "On (default)"
-        } else {
-            "Off"
-        };
-        let wrap_label = if self.config.word_wrap {
-            "On"
-        } else {
-            "Off (default)"
-        };
-
-        let rows = [
+        // (row, label, value, is the default value)
+        let options: [(SettingsRow, &str, String, bool); 5] = [
             (
                 SettingsRow::Theme,
                 "Theme",
-                format!(
-                    "\u{25C0} {}{} \u{25B6}",
-                    themes[self.settings_theme_index], theme_default
-                ),
+                themes[self.settings_theme_index].clone(),
+                themes[self.settings_theme_index] == "ocean",
             ),
             (
                 SettingsRow::Mode,
-                "Mode",
-                format!(
-                    "\u{25C0} {}{} \u{25B6}",
-                    modes[self.settings_mode_index], mode_default
-                ),
+                "Keys",
+                modes[self.settings_mode_index].to_string(),
+                self.settings_mode_index == 0,
             ),
             (
                 SettingsRow::Profile,
-                "Preview",
-                format!(
-                    "\u{25C0} {}{} \u{25B6}",
-                    profiles[self.settings_profile_index].display_name(),
-                    profile_default
-                ),
+                "Preview style",
+                profiles[self.settings_profile_index].name().to_string(),
+                self.settings_profile_index == 0,
             ),
             (
                 SettingsRow::SyncIndicator,
-                "Sync Line",
-                format!("\u{25C0} {} \u{25B6}", sync_label),
+                "Sync highlight",
+                on_off(self.config.sync_indicator).to_string(),
+                self.config.sync_indicator,
             ),
             (
                 SettingsRow::WordWrap,
-                "Word Wrap",
-                format!("\u{25C0} {} \u{25B6}", wrap_label),
+                "Word wrap",
+                on_off(self.config.word_wrap).to_string(),
+                self.config.word_wrap,
             ),
-            (SettingsRow::Save, "", "[ Save to config ]".to_string()),
-            (SettingsRow::Reset, "", "[ Reset defaults ]".to_string()),
+        ];
+        let actions = [
+            (SettingsRow::Save, "Save as default"),
+            (SettingsRow::Reset, "Reset to defaults"),
         ];
 
-        for (i, (row_id, label, value)) in rows.iter().enumerate() {
-            let y_offset = i as u16 * 2;
-            if y_offset >= inner.height {
-                break;
-            }
-            let row_area = Rect::new(inner.x, inner.y + y_offset, inner.width, 1);
-            let is_selected = *row_id == self.settings_row;
+        let popup_w = 48u16.min(area.width);
+        let popup_h = (options.len() + actions.len() + 5) as u16;
+        let popup_h = popup_h.min(area.height);
+        if popup_w < 24 || popup_h < 5 {
+            return;
+        }
+        let popup_area = Rect::new(
+            area.x + (area.width - popup_w) / 2,
+            area.y + (area.height - popup_h) / 2,
+            popup_w,
+            popup_h,
+        );
+        frame.render_widget(Clear, popup_area);
 
-            if *row_id == SettingsRow::Save || *row_id == SettingsRow::Reset {
-                // Center the save button
-                let padding = inner.width.saturating_sub(value.len() as u16) / 2;
-                let padded = format!("{:>w$}{}", "", value, w = padding as usize);
-                let style = if is_selected {
-                    selected_style
-                } else {
-                    normal_style
-                };
-                frame.render_widget(Paragraph::new(Span::styled(padded, style)), row_area);
+        let accent = self.theme.preview_accent_primary;
+        let surface = self.theme.status_bar_bg;
+        let dim = Style::default().fg(self.theme.preview_muted_fg);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(accent))
+            .title_top(Line::from(Span::styled(
+                " settings ",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )))
+            .style(Style::default().bg(surface).fg(self.theme.status_bar_fg));
+        let inner = block.inner(popup_area);
+        frame.render_widget(block, popup_area);
+
+        let row_style = |selected: bool| {
+            if selected {
+                Style::default()
+                    .bg(self.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                let label_w = 10;
-                let line = ratatui::text::Line::from(vec![
-                    Span::styled(
-                        format!("  {:<w$}", label, w = label_w),
-                        if is_selected {
-                            selected_style
-                        } else {
-                            normal_style
-                        },
-                    ),
-                    Span::styled(
-                        value.clone(),
-                        if is_selected {
-                            selected_style
-                        } else {
-                            value_style
-                        },
-                    ),
-                ]);
-                frame.render_widget(Paragraph::new(line), row_area);
+                Style::default()
+            }
+        };
+        let marker = |selected: bool| {
+            if selected {
+                Span::styled(" \u{258C} ", Style::default().fg(accent))
+            } else {
+                Span::raw("   ")
+            }
+        };
+
+        let mut lines: Vec<Line> = vec![Line::default()];
+        for (row, label, value, is_default) in &options {
+            let selected = *row == self.settings_row;
+            let arrow = if selected {
+                Style::default().fg(accent)
+            } else {
+                dim
+            };
+            let mut spans = vec![
+                marker(selected),
+                Span::raw(format!("{:<16}", label)),
+                Span::styled("\u{2039} ", arrow),
+                Span::styled(value.clone(), Style::default().fg(accent)),
+                Span::styled(" \u{203A}", arrow),
+            ];
+            if *is_default {
+                spans.push(Span::styled("  default", dim));
+            }
+            lines.push(Line::from(spans).style(row_style(selected)));
+        }
+        lines.push(Line::default());
+        for (row, label) in &actions {
+            let selected = *row == self.settings_row;
+            lines.push(
+                Line::from(vec![marker(selected), Span::raw(*label)]).style(row_style(selected)),
+            );
+        }
+        lines.truncate(usize::from(inner.height));
+
+        // Line styles only cover their text, so pad rows to the full width
+        // to make the selection bar span the panel.
+        let width = usize::from(inner.width);
+        for line in &mut lines {
+            let used = line.width();
+            if used < width {
+                line.spans.push(Span::raw(" ".repeat(width - used)));
             }
         }
+        frame.render_widget(Paragraph::new(lines), inner);
     }
 
     /// Handle key events in the settings overlay.
@@ -2579,8 +2850,8 @@ impl<'a> App<'a> {
                         self.config.theme = "ocean".to_string();
                         self.config.render_profile = crate::config::RenderProfile::default();
                         self.config.sync_indicator = true;
-                        self.config.word_wrap = false;
-                        self.editor.word_wrap = false;
+                        self.config.word_wrap = true;
+                        self.editor.word_wrap = true;
                         self.content_dirty = true;
                         self.status_bar.set_message("Reset to defaults");
                     }
@@ -2718,7 +2989,7 @@ mod tests {
     #[test]
     fn split_render_handles_zero_width_panes() {
         let mut app = test_app("# mdedit\n\nA tiny render test.");
-        app.preview_doc = app.renderer.render(
+        app.preview_doc = PreviewRenderer.render(
             &app.editor.content(),
             app.config.render_profile,
             &app.theme,
@@ -2827,6 +3098,7 @@ mod tests {
         // Blank-line separated paragraphs so the preview is taller than the pane
         let content = "paragraph\n\n".repeat(200);
         let mut app = test_app(&content);
+        app.layout_mode = LayoutMode::Split;
 
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
@@ -2864,5 +3136,209 @@ mod tests {
                     .expect("README render matrix should not panic");
             }
         }
+    }
+
+    use super::AppMode;
+    use crate::markdown::PreviewRenderer;
+    use crossterm::event::{Event, KeyCode, KeyModifiers};
+
+    fn vim_app(content: &str) -> App<'static> {
+        App::new(
+            Some(content.to_string()),
+            None,
+            Theme::ocean(),
+            EditingMode::Vim,
+            Box::new(TestClipboard),
+            Config::default(),
+        )
+    }
+
+    fn keys(app: &mut App<'static>, input: &str) {
+        for c in input.chars() {
+            let code = match c {
+                '\n' => KeyCode::Enter,
+                '\x1b' => KeyCode::Esc,
+                c => KeyCode::Char(c),
+            };
+            app.handle_event(Event::Key(crossterm::event::KeyEvent::new(
+                code,
+                KeyModifiers::NONE,
+            )));
+        }
+    }
+
+    /// Regression: edits made in vim mode never set the modified flag, so
+    /// `:q` silently discarded unsaved work.
+    #[test]
+    fn vim_edits_mark_the_buffer_modified_and_q_refuses_to_quit() {
+        for edit in ["ihello\x1b", "x", "dd", "ofoo\x1b", "yyp", "J", "rz"] {
+            let mut app = vim_app("first line\nsecond line\n");
+            assert!(!app.editor.is_modified());
+            keys(&mut app, edit);
+            assert!(app.editor.is_modified(), "{edit:?} should mark modified");
+            keys(&mut app, ":q\n");
+            assert!(!app.should_quit, "{edit:?}: :q must not discard changes");
+        }
+
+        // Motions alone leave the buffer clean, and :q quits.
+        let mut app = vim_app("first line\nsecond line\n");
+        keys(&mut app, "jwk$");
+        assert!(!app.editor.is_modified());
+        keys(&mut app, ":q\n");
+        assert!(app.should_quit);
+    }
+
+    /// Regression: Enter in a vim search stayed in search mode, so the next
+    /// commands were typed into the search box.
+    #[test]
+    fn vim_search_enter_returns_to_normal_and_n_steps_through_matches() {
+        let mut app = vim_app("alpha\nbeta alpha\ngamma\nalpha\n");
+        keys(&mut app, "/alpha\n");
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.current_search_query(), "alpha", "highlights persist");
+        let first = app.editor.cursor_position();
+        keys(&mut app, "n");
+        assert_ne!(
+            app.editor.cursor_position(),
+            first,
+            "n moves to the next match"
+        );
+        assert_eq!(app.mode, AppMode::Normal);
+
+        keys(&mut app, "\x1b");
+        assert_eq!(app.current_search_query(), "", "Esc clears highlights");
+
+        // A search with no matches reports it and leaves no stale query.
+        keys(&mut app, "/zzz\n");
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.current_search_query(), "");
+    }
+
+    #[test]
+    fn help_and_version_style_ex_commands_work() {
+        let mut app = vim_app("text\n");
+        keys(&mut app, ":help\n");
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn every_theme_renders_every_mode_without_panicking() {
+        for name in Theme::available_themes() {
+            let theme = Theme::by_name(name).unwrap();
+            for theme in [theme.clone(), theme.with_256_color_fallback()] {
+                let mut app = App::new(
+                    Some(include_str!("../README.md").to_string()),
+                    None,
+                    theme,
+                    EditingMode::Vim,
+                    Box::new(TestClipboard),
+                    Config::default(),
+                );
+                let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+                for input in ["", "i", "\x1bV", "\x1b/the", "\x1b:set", "\x1b:help\n"] {
+                    keys(&mut app, input);
+                    terminal.draw(|frame| app.render(frame)).expect("render");
+                }
+            }
+        }
+    }
+
+    fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn live_view_renders_the_document_and_shows_only_the_cursor_block_raw() {
+        let mut app = vim_app("# Title\n\nSome **bold** text.\n\n- one\n- two\n");
+        assert_eq!(
+            app.layout_mode,
+            LayoutMode::Live,
+            "live is the default view"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+
+        // Cursor on the heading: it is raw, the rest is rendered.
+        terminal.draw(|f| app.render(f)).unwrap();
+        let screen = screen_text(&terminal);
+        assert!(screen.contains("# Title"), "{screen}");
+        assert!(screen.contains("Some bold text."), "paragraph is rendered");
+        assert!(!screen.contains("**bold**"));
+        assert!(screen.contains("\u{2022} one"), "list is rendered");
+
+        // Move into the paragraph: heading renders, paragraph turns raw.
+        keys(&mut app, "jj");
+        terminal.draw(|f| app.render(f)).unwrap();
+        let screen = screen_text(&terminal);
+        assert!(screen.contains("Some **bold** text."), "{screen}");
+        assert!(!screen.contains("# Title"), "heading re-rendered");
+        assert!(screen.contains("Title"));
+
+        // Only the list item under the cursor is raw, not the whole list.
+        keys(&mut app, "jjj");
+        terminal.draw(|f| app.render(f)).unwrap();
+        let screen = screen_text(&terminal);
+        assert!(
+            screen.contains("\u{2022} one") && screen.contains("- two"),
+            "{screen}"
+        );
+
+        // Editing in place updates the buffer and, once rendered, the view.
+        keys(&mut app, "A!\x1bgg");
+        terminal.draw(|f| app.render(f)).unwrap();
+        let screen = screen_text(&terminal);
+        assert!(screen.contains("\u{2022} two!"), "{screen}");
+        assert!(app.editor.content().contains("- two!"));
+    }
+
+    #[test]
+    fn live_view_keeps_the_cursor_on_screen_everywhere() {
+        let readme = include_str!("../README.md");
+        let line_count = readme.lines().count();
+        for (width, height) in [(110u16, 32u16), (60, 16), (30, 8), (12, 5), (4, 3)] {
+            let mut app = vim_app(readme);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            // Down through every line, then back up, then edits that add and
+            // remove lines (the rendered doc lags the buffer by design).
+            for step in ["j"; 400].iter().chain(["k"; 400].iter()).chain(
+                [
+                    "o", "new", "\n", "\n", "text", "\x1b", "dd", "dd", "u", "G", "gg",
+                ]
+                .iter(),
+            ) {
+                keys(&mut app, step);
+                terminal.draw(|f| app.render(f)).expect("render");
+                if width > 6 && height > 3 {
+                    let pos = terminal.get_cursor_position().unwrap();
+                    assert!(
+                        pos.x < width && pos.y < height - 1,
+                        "cursor {pos:?} off screen at {width}x{height}"
+                    );
+                }
+            }
+            assert!(app.editor.line_count() >= line_count);
+        }
+    }
+
+    #[test]
+    fn live_view_click_on_rendered_text_opens_that_block() {
+        let mut app = vim_app("# Title\n\nFirst paragraph.\n\nSecond paragraph.\n");
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let screen = screen_text(&terminal);
+        let row = screen
+            .lines()
+            .position(|l| l.contains("Second paragraph."))
+            .unwrap() as u16;
+        click(&mut app, 10, row);
+        assert_eq!(app.editor.cursor_position().0, 4);
     }
 }

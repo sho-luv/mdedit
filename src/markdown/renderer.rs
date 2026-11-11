@@ -2,12 +2,11 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::FontStyle;
 
 use super::layout::{layout, spans_width, wrap_flow, Fit, PLine, Page, NO_SRC};
 use super::{MarkdownRenderer, RenderResult};
 use crate::config::RenderProfile;
-use crate::highlighter::{syntax_set, syntect_theme};
+use crate::highlighter::{apply_syntect_style, build_syntax_theme, syntax_set};
 use crate::theme::Theme;
 
 /// Markdown -> terminal preview renderer built directly on pulldown-cmark.
@@ -131,12 +130,13 @@ fn render_markdown(
     // side and a capped line length on wide panes (Warp's notebook column).
     let clean = profile == RenderProfile::Clean;
     let pane_cells = usize::from(width.max(1));
-    let margin = if clean && pane_cells >= 40 { 1 } else { 0 };
-    let width_cells = if clean {
-        (pane_cells - 2 * margin).min(CLEAN_MAX_WIDTH)
+    let width_cells = if clean && pane_cells >= 40 {
+        (pane_cells - 2).min(CLEAN_MAX_WIDTH)
     } else {
         pane_cells
     };
+    // Center the reading column when the pane is wider than the cap.
+    let margin = (pane_cells - width_cells) / 2;
     let page = Page {
         pane_width: width,
         content_width: width_cells,
@@ -167,6 +167,8 @@ fn render_markdown(
     // style (completed task in the clean profile).
     let mut item_stack: Vec<(String, bool)> = Vec::new();
     let mut heading_level: Option<HeadingLevel> = None;
+    // > 0 while inside a link or image (bare-URL detection is skipped there).
+    let mut link_depth = 0usize;
 
     // Code block state
     let mut in_code_block = false;
@@ -194,8 +196,29 @@ fn render_markdown(
     let callout_glyph = if clean { "\u{258E} " } else { "\u{2588} " };
     let callout_bar = |color: Color| Span::styled(callout_glyph, Style::default().fg(color));
 
+    // Top-level blocks for the live view: (source line, first logical line).
+    // Items of a top-level list count as blocks of their own, so editing one
+    // item doesn't un-render the whole list.
+    let mut block_starts: Vec<(usize, usize)> = Vec::new();
+    let mut depth = 0usize;
+
     for (event, range) in Parser::new_ext(&processed, options).into_offset_iter() {
         b.src = byte_to_source_line(range.start);
+
+        let starts_block = match &event {
+            Event::Start(Tag::Item) => depth == 1,
+            Event::Start(_) | Event::Rule => depth == 0,
+            _ => false,
+        };
+        if starts_block && block_starts.last().map_or(true, |&(src, _)| src < b.src) {
+            b.flush();
+            block_starts.push((b.src, b.out.len()));
+        }
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
 
         match event {
             Event::Start(tag) => match tag {
@@ -273,11 +296,22 @@ fn render_markdown(
                     style_stack.push(base.fg(theme.preview_muted_fg));
                 }
                 Tag::Link { .. } => {
+                    link_depth += 1;
                     let base = current_style(&style_stack);
                     style_stack.push(
                         base.fg(theme.preview_link_fg)
                             .add_modifier(Modifier::UNDERLINED),
                     );
+                }
+                Tag::Image { .. } => {
+                    // Terminals can't show the picture; mark it and show the
+                    // alt text so it doesn't read as ordinary prose.
+                    link_depth += 1;
+                    let style = Style::default()
+                        .fg(theme.preview_muted_fg)
+                        .add_modifier(Modifier::ITALIC);
+                    b.push(Span::styled("\u{25A3} ", style));
+                    style_stack.push(style);
                 }
                 Tag::Table(alignments) => {
                     b.flush();
@@ -319,7 +353,11 @@ fn render_markdown(
                     b.flush();
                     b.blank();
                 }
-                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                    style_stack.pop();
+                }
+                TagEnd::Link | TagEnd::Image => {
+                    link_depth = link_depth.saturating_sub(1);
                     style_stack.pop();
                 }
                 TagEnd::CodeBlock => {
@@ -433,10 +471,21 @@ fn render_markdown(
                         };
                         b.push_prefix(bar.clone(), bar);
                     }
-                    b.push(Span::styled(
-                        text.replace('\t', " "),
-                        current_style(&style_stack),
-                    ));
+                    let style = current_style(&style_stack);
+                    let text = text.replace('\t', " ");
+                    if link_depth == 0 && text.contains("://") {
+                        let link_style = style
+                            .fg(theme.preview_link_fg)
+                            .add_modifier(Modifier::UNDERLINED);
+                        for (part, is_url) in split_bare_urls(&text) {
+                            b.push(Span::styled(
+                                part.to_string(),
+                                if is_url { link_style } else { style },
+                            ));
+                        }
+                    } else {
+                        b.push(Span::styled(text, style));
+                    }
                 }
             }
             Event::Code(code) => {
@@ -546,7 +595,43 @@ fn render_markdown(
     }
 
     b.flush();
-    layout(b.out, page, total_source_lines)
+    layout(b.out, page, total_source_lines, &block_starts)
+}
+
+/// Split text into (segment, is_url) pieces, recognizing bare `http://` and
+/// `https://` URLs. Trailing sentence punctuation is left outside the URL.
+fn split_bare_urls(text: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = ["https://", "http://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        let tail = &rest[start..];
+        let mut end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"'))
+            .unwrap_or(tail.len());
+        while end > 0 && tail[..end].ends_with(['.', ',', ';', ':', '!', '?', ')', '\'']) {
+            end -= 1;
+        }
+        if tail[..end].find("://").is_some_and(|i| i + 3 < end) {
+            if start > 0 {
+                out.push((&rest[..start], false));
+            }
+            out.push((&tail[..end], true));
+            rest = &tail[end..];
+        } else {
+            // Scheme with nothing after it: keep as plain text.
+            let skip = start + tail.find("://").map_or(tail.len(), |i| i + 3);
+            out.push((&rest[..skip], false));
+            rest = &rest[skip..];
+        }
+    }
+    if !rest.is_empty() {
+        out.push((rest, false));
+    }
+    out
 }
 
 /// Byte offsets just past each '\n' (i.e. the start of every following line).
@@ -559,21 +644,23 @@ fn memchr_newlines(text: &str) -> impl Iterator<Item = usize> + '_ {
 
 /// Emit a callout's header line: thick colored bar + icon + title.
 fn push_callout_header(b: &mut Builder, callout: &str, icon: &str, color: Color, clean: bool) {
-    let (bar, title) = if clean {
+    let label_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    if clean {
+        // The colored bar and label carry the meaning; no icon.
         let mut chars = callout.chars();
         let title: String = chars
             .next()
             .map(|c| c.to_uppercase().chain(chars).collect())
             .unwrap_or_default();
-        ("\u{258E} ", title)
+        b.push(Span::styled("\u{258E} ", Style::default().fg(color)));
+        b.push(Span::styled(title, label_style));
     } else {
-        ("\u{2588} ", callout.to_uppercase())
-    };
-    b.push(Span::styled(bar.to_string(), Style::default().fg(color)));
-    b.push(Span::styled(
-        format!("{} {}", icon, title),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    ));
+        b.push(Span::styled("\u{2588} ", Style::default().fg(color)));
+        b.push(Span::styled(
+            format!("{} {}", icon, callout.to_uppercase()),
+            label_style,
+        ));
+    }
     b.flush();
 }
 
@@ -644,7 +731,8 @@ fn highlight_code(
             .map(|l| vec![Span::styled(l.clone(), base)])
             .collect();
     };
-    let mut highlighter = HighlightLines::new(syntax, syntect_theme(&theme.syntect_theme));
+    let syntax_theme = build_syntax_theme(theme);
+    let mut highlighter = HighlightLines::new(syntax, &syntax_theme);
     lines
         .iter()
         .map(|code_line| {
@@ -659,21 +747,10 @@ fn highlight_code(
                     if content.is_empty() {
                         return None;
                     }
-                    let mut rs = base;
-                    if style.foreground.a > 0 {
-                        rs = rs.fg(Color::Rgb(
-                            style.foreground.r,
-                            style.foreground.g,
-                            style.foreground.b,
-                        ));
-                    }
-                    if style.font_style.contains(FontStyle::BOLD) {
-                        rs = rs.add_modifier(Modifier::BOLD);
-                    }
-                    if style.font_style.contains(FontStyle::ITALIC) {
-                        rs = rs.add_modifier(Modifier::ITALIC);
-                    }
-                    Some(Span::styled(content.to_string(), rs))
+                    Some(Span::styled(
+                        content.to_string(),
+                        apply_syntect_style(base, &style),
+                    ))
                 })
                 .collect()
         })
@@ -1562,16 +1639,22 @@ fn main() {
     }
 
     #[test]
-    fn clean_caps_the_reading_width_with_a_margin() {
+    fn clean_caps_the_reading_width_and_centers_the_column() {
         let result = clean(200);
+        let margin = " ".repeat(50);
         for r in 0..result.rows.len() {
             let text = row_text(&result, r);
             if text.is_empty() {
                 continue;
             }
-            assert!(text.starts_with(' '), "row {r} has no margin: {text:?}");
-            assert!(text_width(&text) <= 1 + 100, "row {r} too wide");
+            assert!(text.starts_with(&margin), "row {r} not centered: {text:?}");
+            assert!(text_width(&text) <= 50 + 100, "row {r} too wide");
         }
         assert_eq!(result.width, 200);
+
+        // Panes narrower than the cap keep a one-cell margin.
+        let split = clean(60);
+        let heading = find_row(&split, "Core Design Principles");
+        assert!(row_text(&split, heading).starts_with(" Core"));
     }
 }

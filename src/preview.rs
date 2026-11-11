@@ -13,11 +13,17 @@ use crate::theme::Theme;
 /// of the visible slice — O(visible rows), independent of document size.
 pub struct Preview {
     scroll_offset: usize,
+    /// Whether an empty document shows the "nothing to preview" hint. Off
+    /// while a render is still in flight, so the hint never flashes.
+    pub show_empty_hint: bool,
 }
 
 impl Preview {
     pub fn new() -> Self {
-        Preview { scroll_offset: 0 }
+        Preview {
+            scroll_offset: 0,
+            show_empty_hint: true,
+        }
     }
 
     pub fn scroll_up(&mut self, lines: u16) {
@@ -35,7 +41,6 @@ impl Preview {
     }
 
     /// Current scroll offset (rows from the top).
-    #[allow(dead_code)]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
@@ -65,6 +70,24 @@ impl Preview {
 
         let buf = frame.buffer_mut();
         buf.set_style(area, Style::default().fg(theme.preview_fg));
+
+        if doc.rows.iter().all(|row| row.width() == 0) {
+            // Empty document: a quiet placeholder instead of a blank pane.
+            let hint = "Nothing to preview yet";
+            if self.show_empty_hint && usize::from(area.width) > hint.len() {
+                let x = area.x + (area.width - hint.len() as u16) / 2;
+                let y = area.y + area.height / 2;
+                buf.set_string(
+                    x,
+                    y,
+                    hint,
+                    Style::default()
+                        .fg(theme.preview_muted_fg)
+                        .add_modifier(ratatui::style::Modifier::ITALIC),
+                );
+            }
+            return;
+        }
         for (i, line) in doc.rows.iter().skip(top).take(visible).enumerate() {
             buf.set_line(area.x, area.y + i as u16, line, area.width);
         }

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::cursor::Show;
 use crossterm::event::{
@@ -21,6 +21,7 @@ mod config;
 mod editor;
 mod file_io;
 mod highlighter;
+mod live;
 mod markdown;
 mod preview;
 mod status_bar;
@@ -28,7 +29,11 @@ mod theme;
 mod vim;
 
 #[derive(Parser)]
-#[command(name = "mdedit", about = "A terminal markdown editor")]
+#[command(
+    name = "mdedit",
+    version,
+    about = "A terminal markdown editor with live rendered preview"
+)]
 struct Cli {
     /// File to edit
     file: Option<PathBuf>,
@@ -40,6 +45,11 @@ struct Cli {
     /// Override editing mode (vim or nano)
     #[arg(long)]
     mode: Option<String>,
+
+    /// Starting view: live (edit inside the rendered document), split,
+    /// editor, or preview
+    #[arg(long)]
+    view: Option<String>,
 }
 
 struct TerminalSession;
@@ -105,7 +115,14 @@ fn panic_payload(info: &PanicInfo<'_>) -> String {
     }
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("mdedit: {err:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     install_panic_hook();
 
     let cli = Cli::parse();
@@ -121,8 +138,14 @@ fn main() -> Result<()> {
         match mode_str.to_lowercase().as_str() {
             "vim" => cfg.mode = config::EditingMode::Vim,
             "nano" => cfg.mode = config::EditingMode::Nano,
-            other => eprintln!("Warning: unknown mode '{}', using vim", other),
+            other => anyhow::bail!("unknown --mode '{other}' (expected vim or nano)"),
         }
+    }
+
+    if let Some(view) = cli.view {
+        cfg.view = config::StartView::from_name(&view).ok_or_else(|| {
+            anyhow::anyhow!("unknown --view '{view}' (expected live, split, editor or preview)")
+        })?;
     }
 
     // Resolve theme from config
@@ -130,6 +153,7 @@ fn main() -> Result<()> {
 
     // Detect terminal color capability and apply fallback if needed
     let cap = theme::detect_color_capability();
+    theme::set_color_capability(cap);
     if cap == theme::ColorCapability::Color256 {
         resolved_theme = resolved_theme.with_256_color_fallback();
     }
@@ -142,11 +166,13 @@ fn main() -> Result<()> {
     };
 
     // Manual terminal init with panic-safe cleanup.
-    let _session = TerminalSession::enter()?;
+    let _session = TerminalSession::enter()
+        .context("needs an interactive terminal (could not switch the terminal to raw mode)")?;
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let clipboard = clipboard::detect_provider();
     let mut app = app::App::new(content, cli.file, resolved_theme, cfg.mode, clipboard, cfg);
+    app.enable_background_preview();
     app.run(&mut terminal)
 }

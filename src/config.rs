@@ -12,6 +12,32 @@ pub enum EditingMode {
     Nano,
 }
 
+/// Which view the app opens in (Ctrl+P cycles through them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartView {
+    /// Edit inside the rendered document: only the block under the cursor
+    /// shows raw markdown.
+    #[default]
+    Live,
+    /// Raw editor and rendered preview side by side.
+    Split,
+    Editor,
+    Preview,
+}
+
+impl StartView {
+    pub fn from_name(name: &str) -> Option<StartView> {
+        match name.to_lowercase().as_str() {
+            "live" => Some(StartView::Live),
+            "split" => Some(StartView::Split),
+            "editor" | "edit" => Some(StartView::Editor),
+            "preview" => Some(StartView::Preview),
+            _ => None,
+        }
+    }
+}
+
 /// Markdown render profile — controls how the preview renders markdown
 /// to match the target platform's style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -158,8 +184,11 @@ pub struct Config {
     pub render_profile: RenderProfile,
     #[serde(default = "default_true")]
     pub sync_indicator: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub word_wrap: bool,
+    /// View to open in: "live" (default), "split", "editor" or "preview".
+    #[serde(default)]
+    pub view: StartView,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub custom_themes: HashMap<String, CustomThemeColors>,
 }
@@ -175,24 +204,44 @@ impl Default for Config {
             mode: EditingMode::Vim,
             render_profile: RenderProfile::default(),
             sync_indicator: true,
-            word_wrap: false,
+            word_wrap: true,
+            view: StartView::default(),
             custom_themes: HashMap::new(),
         }
     }
 }
 
+/// Config file locations in priority order: `$XDG_CONFIG_HOME/mdedit` or
+/// `~/.config/mdedit` (the documented location on every platform), then the
+/// OS-native config dir (`~/Library/Application Support` on macOS), which
+/// earlier versions used.
+fn config_candidates() -> Vec<std::path::PathBuf> {
+    let mut dirs_in_order = Vec::new();
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(xdg) if !xdg.is_empty() => dirs_in_order.push(std::path::PathBuf::from(xdg)),
+        _ => {
+            if let Some(home) = dirs::home_dir() {
+                dirs_in_order.push(home.join(".config"));
+            }
+        }
+    }
+    if let Some(native) = dirs::config_dir() {
+        if !dirs_in_order.contains(&native) {
+            dirs_in_order.push(native);
+        }
+    }
+    dirs_in_order
+        .into_iter()
+        .map(|d| d.join("mdedit").join("config.toml"))
+        .collect()
+}
+
 /// Load configuration from ~/.config/mdedit/config.toml.
 /// Returns default config if file doesn't exist or can't be parsed.
 pub fn load_config() -> Config {
-    let config_dir = match dirs::config_dir() {
-        Some(dir) => dir,
-        None => return Config::default(),
-    };
-    let config_path = config_dir.join("mdedit").join("config.toml");
-
-    if !config_path.exists() {
+    let Some(config_path) = config_candidates().into_iter().find(|p| p.exists()) else {
         return Config::default();
-    }
+    };
 
     match std::fs::read_to_string(&config_path) {
         Ok(contents) => match toml::from_str::<Config>(&contents) {
@@ -251,18 +300,26 @@ pub fn available_theme_names(config: &Config) -> Vec<String> {
 /// Creates the directory if it doesn't exist.
 /// Returns Ok(path) on success or Err(message) on failure.
 pub fn save_config(config: &Config) -> Result<String, String> {
-    let config_dir =
-        dirs::config_dir().ok_or_else(|| "Could not determine config directory".to_string())?;
-    let mdedit_dir = config_dir.join("mdedit");
+    // Keep writing to an existing config wherever it lives; new configs go
+    // to the documented ~/.config/mdedit location.
+    let candidates = config_candidates();
+    let config_path = candidates
+        .iter()
+        .find(|p| p.exists())
+        .or(candidates.first())
+        .ok_or_else(|| "Could not determine config directory".to_string())?;
+    let mdedit_dir = config_path
+        .parent()
+        .ok_or_else(|| "Could not determine config directory".to_string())?
+        .to_path_buf();
 
     std::fs::create_dir_all(&mdedit_dir)
         .map_err(|e| format!("Failed to create config dir: {}", e))?;
 
-    let config_path = mdedit_dir.join("config.toml");
     let contents =
         toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-    std::fs::write(&config_path, contents).map_err(|e| format!("Failed to write config: {}", e))?;
+    std::fs::write(config_path, contents).map_err(|e| format!("Failed to write config: {}", e))?;
 
     Ok(config_path.display().to_string())
 }

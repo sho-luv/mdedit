@@ -9,6 +9,17 @@
 
 ## Updates
 
+### 2026-11-11
+- Polish and performance pass after evaluating the app end to end (screenshots of every screen, whole-app benchmarks). Uncommitted, for review.
+- Fixed data loss: edits made in vim mode never set the modified flag, so `:q` discarded unsaved work without warning and the modified marker never showed.
+- Fixed search in vim mode: Enter now accepts and returns to Normal (`n`/`N` step, Esc clears highlights); before, the next keys were typed into the search box.
+- Startup: editor on screen in ~1ms (was 56-82ms). Replaced syntect in the editor pane with a small hand-written markdown tokenizer and moved preview rendering to a background thread. Jump to end of a 5,200-line file: 0.6ms (was ~200ms). Keystroke + full frame on that file: ~1.2ms.
+- UI: new truecolor palettes (ocean no longer uses 16-color ANSI greys/blues), themes with their own background now paint it (solarized-light was unreadable on dark terminals), current-line highlight instead of underline, padded gutter, colored mode pill, modified dot, word count, unified prompts with a real cursor, scrollbars, rebuilt settings panel, empty-preview hint, syntax colors derived from the app theme.
+- Editor wraps at word boundaries and word wrap is on by default. Preview: reading column centered in wide panes, bare URLs linked, images marked, clean callouts without emoji.
+- Config now lives at `~/.config/mdedit/config.toml` on every platform (legacy macOS location still honored). Added `--version`, `:help`, `:noh`, plain-language file errors, and saves that keep permissions and symlinks. Better 256-color fallback and truecolor detection.
+- **Live view** (new default, `--view live`, Ctrl+P cycles): edit inside the rendered document, glow-style. The document is drawn from the preview's rendered rows; the block under the cursor or selection (paragraph, heading, list item, code block, table) is swapped for its raw, highlighted source and re-renders when the cursor leaves. Renderer now reports top-level block spans (source lines <-> rows); `src/live.rs` composes the view and maps clicks. 0.17ms per cursor move and 0.3ms per keystroke on a 5,200-line file.
+- 52 tests (was 36), fmt/clippy (-D warnings)/test green.
+
 ### 2026-09-24
 - Rewrote the preview pipeline for speed and exact alignment. Per-frame work on a 5,200-line file dropped from ~100ms to ~0.1ms; editor syntax highlighting from ~75ms/keystroke to ~1.2ms.
   - Preview is laid out once per pane width into pre-wrapped rows with an exact row→source-line map; drawing a frame is now a copy of the visible slice (`src/markdown/layout.rs`, new).

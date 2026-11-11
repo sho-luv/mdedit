@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use super::RenderResult;
+use super::{BlockSpan, RenderResult};
 
 /// Marker source for spans that don't carry content from the document
 /// (continuation indents, padding), so they never anchor scroll sync.
@@ -328,14 +328,26 @@ fn usable_hang<'a>(hang: &'a [Span<'static>], width: usize) -> (&'a [Span<'stati
 }
 
 /// Wrap every logical line to `width` and build the row/source maps.
-pub fn layout(plines: Vec<PLine>, page: Page, total_source_lines: usize) -> RenderResult {
+///
+/// `block_starts` lists top-level blocks as (source line, index of the block's
+/// first logical line); they are translated to row positions here.
+pub fn layout(
+    plines: Vec<PLine>,
+    page: Page,
+    total_source_lines: usize,
+    block_starts: &[(usize, usize)],
+) -> RenderResult {
     let w = page.content_width.max(1);
     let margin = " ".repeat(page.margin);
     let mut rows: Vec<Line<'static>> = Vec::with_capacity(plines.len() + plines.len() / 4);
     let mut row_source: Vec<usize> = Vec::with_capacity(rows.capacity());
     let mut first_row: Vec<Option<usize>> = vec![None; total_source_lines];
 
+    // Row index at which each logical line starts (plus one past the end).
+    let mut pline_first_row: Vec<usize> = Vec::with_capacity(plines.len() + 1);
+
     for pl in plines {
+        pline_first_row.push(rows.len());
         let (bufs, fill, frame) = match pl.fit {
             Fit::Flow => (wrap_flow(&pl.spans, &pl.srcs, w, &pl.hang), None, None),
             Fit::Pre { fill } => (wrap_hard(&pl.spans, &pl.srcs, w, &pl.hang), fill, None),
@@ -398,11 +410,23 @@ pub fn layout(plines: Vec<PLine>, page: Page, total_source_lines: usize) -> Rend
         source_to_row.push(last);
     }
 
+    pline_first_row.push(rows.len());
+    let blocks = block_starts
+        .iter()
+        .map(|&(source_start, pline)| BlockSpan {
+            source_start,
+            row_start: pline_first_row[pline.min(pline_first_row.len() - 1)],
+        })
+        .collect();
+
     RenderResult {
         rows,
         row_source,
         source_to_row,
         width: page.pane_width,
+        margin: page.margin as u16,
+        content_width: page.content_width.min(usize::from(u16::MAX)) as u16,
+        blocks,
     }
 }
 

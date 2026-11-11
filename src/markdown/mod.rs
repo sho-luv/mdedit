@@ -18,6 +18,23 @@ pub struct RenderResult {
     pub source_to_row: Vec<usize>,
     /// Width the rows were laid out for.
     pub width: u16,
+    /// Blank cells at the left of every row (reading-column margin) and the
+    /// width of the text column after it.
+    pub margin: u16,
+    pub content_width: u16,
+    /// Top-level blocks (paragraphs, headings, list items, code blocks,
+    /// tables, ...) in document order. Block `i` covers source lines
+    /// `[blocks[i].source_start, blocks[i+1].source_start)` and rows
+    /// `[blocks[i].row_start, blocks[i+1].row_start)`; the last block runs to
+    /// the end. The live view swaps a block's rows for its raw source.
+    pub blocks: Vec<BlockSpan>,
+}
+
+/// Where a top-level block starts, in source lines and in rendered rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSpan {
+    pub source_start: usize,
+    pub row_start: usize,
 }
 
 impl RenderResult {
@@ -27,6 +44,9 @@ impl RenderResult {
             row_source: Vec::new(),
             source_to_row: Vec::new(),
             width: 0,
+            margin: 0,
+            content_width: 0,
+            blocks: Vec::new(),
         }
     }
 
@@ -37,6 +57,9 @@ impl RenderResult {
             row_source: vec![0; lines.len()],
             source_to_row: Vec::new(),
             width: 0,
+            margin: 0,
+            content_width: 0,
+            blocks: Vec::new(),
         }
     }
 

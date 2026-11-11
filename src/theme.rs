@@ -1,5 +1,50 @@
 use ratatui::style::Color;
 use serde::Deserialize;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set once at startup when the terminal can't display 24-bit color, so
+/// colors produced outside the `Theme` struct (syntax highlighting) can be
+/// downgraded too.
+static DOWNGRADE_TO_256: AtomicBool = AtomicBool::new(false);
+
+/// Record the terminal's color capability for [`adapt_color`].
+pub fn set_color_capability(cap: ColorCapability) {
+    DOWNGRADE_TO_256.store(cap == ColorCapability::Color256, Ordering::Relaxed);
+}
+
+/// Map a color to what the terminal can display (identity on truecolor).
+pub fn adapt_color(color: Color) -> Color {
+    if DOWNGRADE_TO_256.load(Ordering::Relaxed) {
+        rgb_to_256(color)
+    } else {
+        color
+    }
+}
+
+/// RGB components of a color, when it has a fixed value (truecolor or the
+/// xterm 256-color cube / gray ramp). Named ANSI colors return `None`
+/// because their appearance is defined by the terminal.
+pub fn to_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(i @ 16..=231) => {
+            let i = i - 16;
+            Some((
+                CUBE_LEVELS[usize::from(i / 36)],
+                CUBE_LEVELS[usize::from(i / 6 % 6)],
+                CUBE_LEVELS[usize::from(i % 6)],
+            ))
+        }
+        Color::Indexed(i @ 232..=255) => {
+            let v = 8 + 10 * (i - 232);
+            Some((v, v, v))
+        }
+        _ => None,
+    }
+}
+
+/// Channel values of the xterm 6x6x6 color cube.
+const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
 /// Terminal color capability detected from environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8,11 +53,38 @@ pub enum ColorCapability {
     Color256,
 }
 
-/// Detect terminal color capability from $COLORTERM environment variable.
+/// Detect terminal color capability from the environment.
+///
+/// `$COLORTERM` is the standard signal, but it is often lost over SSH or
+/// inside tmux, so well-known truecolor terminals are also recognized by
+/// `$TERM_PROGRAM` / `$TERM`.
 pub fn detect_color_capability() -> ColorCapability {
-    match std::env::var("COLORTERM").as_deref() {
-        Ok("truecolor") | Ok("24bit") => ColorCapability::TrueColor,
-        _ => ColorCapability::Color256,
+    let var = |name: &str| std::env::var(name).unwrap_or_default().to_lowercase();
+    capability_from_env(&var("COLORTERM"), &var("TERM_PROGRAM"), &var("TERM"))
+}
+
+fn capability_from_env(colorterm: &str, term_program: &str, term: &str) -> ColorCapability {
+    const TRUECOLOR_PROGRAMS: [&str; 9] = [
+        "iterm.app",
+        "warpterminal",
+        "ghostty",
+        "wezterm",
+        "vscode",
+        "hyper",
+        "tabby",
+        "rio",
+        "zed",
+    ];
+    const TRUECOLOR_TERMS: [&str; 6] =
+        ["kitty", "alacritty", "ghostty", "wezterm", "foot", "direct"];
+
+    if matches!(colorterm, "truecolor" | "24bit")
+        || TRUECOLOR_PROGRAMS.contains(&term_program)
+        || TRUECOLOR_TERMS.iter().any(|t| term.contains(t))
+    {
+        ColorCapability::TrueColor
+    } else {
+        ColorCapability::Color256
     }
 }
 
@@ -37,6 +109,9 @@ pub struct Theme {
     pub confirm_fg: Color,
     pub prompt_bg: Color,
     pub prompt_fg: Color,
+    /// Legacy: name of a bundled syntect theme. Syntax colors are now derived
+    /// from this theme's own palette; kept so existing configs still parse.
+    #[allow(dead_code)]
     pub syntect_theme: String,
     pub preview_fg: Color,
     pub preview_muted_fg: Color,
@@ -56,6 +131,10 @@ pub struct Theme {
     pub mode_insert_bg: Color,
     pub mode_visual_bg: Color,
     pub mode_command_bg: Color,
+    /// Background tint of the line the editor cursor is on.
+    pub cursor_line_bg: Color,
+    /// Text color on filled chips (mode pill, prompt labels).
+    pub chip_fg: Color,
 }
 
 impl Theme {
@@ -63,45 +142,47 @@ impl Theme {
     pub fn ocean() -> Self {
         Theme {
             editor_bg: None,
-            editor_fg: None,
-            line_number_fg: Color::DarkGray,
-            selection_bg: Color::Rgb(68, 68, 102),
-            search_active_bg: Color::Cyan,
-            search_active_fg: Color::Black,
-            search_match_bg: Color::Yellow,
-            search_match_fg: Color::Black,
-            divider_fg: Color::DarkGray,
-            status_bar_bg: Color::DarkGray,
-            status_bar_fg: Color::White,
-            confirm_bg: Color::Red,
-            confirm_fg: Color::White,
-            prompt_bg: Color::Blue,
-            prompt_fg: Color::White,
+            editor_fg: Some(Color::Rgb(201, 209, 217)),
+            line_number_fg: Color::Rgb(92, 99, 112),
+            selection_bg: Color::Rgb(38, 79, 120),
+            search_active_bg: Color::Rgb(255, 208, 96),
+            search_active_fg: Color::Rgb(13, 17, 23),
+            search_match_bg: Color::Rgb(77, 64, 22),
+            search_match_fg: Color::Rgb(240, 225, 170),
+            divider_fg: Color::Rgb(61, 68, 77),
+            status_bar_bg: Color::Rgb(28, 33, 40),
+            status_bar_fg: Color::Rgb(173, 186, 199),
+            confirm_bg: Color::Rgb(248, 81, 73),
+            confirm_fg: Color::Rgb(13, 17, 23),
+            prompt_bg: Color::Rgb(88, 166, 255),
+            prompt_fg: Color::Rgb(13, 17, 23),
             syntect_theme: "base16-ocean.dark".to_string(),
             preview_fg: Color::Rgb(230, 237, 243),
             preview_muted_fg: Color::Rgb(139, 148, 158),
             preview_link_fg: Color::Rgb(88, 166, 255),
             preview_inline_code_fg: Color::Rgb(255, 208, 96),
-            preview_inline_code_bg: Color::Rgb(40, 40, 50),
-            preview_code_bg: Color::Rgb(30, 30, 40),
+            preview_inline_code_bg: Color::Rgb(38, 44, 54),
+            preview_code_bg: Color::Rgb(26, 31, 38),
             preview_indicator_fg: Color::Rgb(88, 166, 255),
-            preview_indicator_bg: Color::Rgb(20, 30, 45),
+            preview_indicator_bg: Color::Rgb(28, 42, 62),
             preview_accent_primary: Color::Rgb(88, 166, 255),
             preview_accent_secondary: Color::Rgb(126, 231, 135),
             preview_accent_tertiary: Color::Rgb(168, 131, 255),
             preview_accent_warning: Color::Rgb(255, 208, 96),
             preview_accent_danger: Color::Rgb(248, 81, 73),
-            mode_normal_bg: Color::DarkGray,
-            mode_insert_bg: Color::Rgb(0, 100, 0),
-            mode_visual_bg: Color::Rgb(0, 0, 139),
-            mode_command_bg: Color::Blue,
+            mode_normal_bg: Color::Rgb(88, 166, 255),
+            mode_insert_bg: Color::Rgb(126, 231, 135),
+            mode_visual_bg: Color::Rgb(168, 131, 255),
+            mode_command_bg: Color::Rgb(255, 208, 96),
+            cursor_line_bg: Color::Rgb(28, 33, 40),
+            chip_fg: Color::Rgb(13, 17, 23),
         }
     }
 
     /// Dracula theme.
     pub fn dracula() -> Self {
         Theme {
-            editor_bg: None,
+            editor_bg: Some(Color::Rgb(40, 42, 54)),
             editor_fg: Some(Color::Rgb(248, 248, 242)),
             line_number_fg: Color::Rgb(98, 114, 164),
             selection_bg: Color::Rgb(68, 71, 90),
@@ -109,13 +190,13 @@ impl Theme {
             search_active_fg: Color::Rgb(40, 42, 54),
             search_match_bg: Color::Rgb(241, 250, 140),
             search_match_fg: Color::Rgb(40, 42, 54),
-            divider_fg: Color::Rgb(68, 71, 90),
-            status_bar_bg: Color::Rgb(68, 71, 90),
+            divider_fg: Color::Rgb(86, 90, 112),
+            status_bar_bg: Color::Rgb(52, 55, 70),
             status_bar_fg: Color::Rgb(248, 248, 242),
             confirm_bg: Color::Rgb(255, 85, 85),
-            confirm_fg: Color::Rgb(248, 248, 242),
-            prompt_bg: Color::Rgb(98, 114, 164),
-            prompt_fg: Color::Rgb(248, 248, 242),
+            confirm_fg: Color::Rgb(40, 42, 54),
+            prompt_bg: Color::Rgb(139, 233, 253),
+            prompt_fg: Color::Rgb(40, 42, 54),
             syntect_theme: "Solarized (dark)".to_string(),
             preview_fg: Color::Rgb(248, 248, 242),
             preview_muted_fg: Color::Rgb(98, 114, 164),
@@ -124,26 +205,28 @@ impl Theme {
             preview_inline_code_bg: Color::Rgb(68, 71, 90),
             preview_code_bg: Color::Rgb(40, 42, 54),
             preview_indicator_fg: Color::Rgb(139, 233, 253),
-            preview_indicator_bg: Color::Rgb(68, 71, 90),
+            preview_indicator_bg: Color::Rgb(58, 61, 80),
             preview_accent_primary: Color::Rgb(139, 233, 253),
             preview_accent_secondary: Color::Rgb(80, 250, 123),
             preview_accent_tertiary: Color::Rgb(189, 147, 249),
             preview_accent_warning: Color::Rgb(255, 184, 108),
             preview_accent_danger: Color::Rgb(255, 85, 85),
-            mode_normal_bg: Color::Rgb(68, 71, 90),
+            mode_normal_bg: Color::Rgb(189, 147, 249),
             mode_insert_bg: Color::Rgb(80, 250, 123),
-            mode_visual_bg: Color::Rgb(189, 147, 249),
-            mode_command_bg: Color::Rgb(98, 114, 164),
+            mode_visual_bg: Color::Rgb(255, 184, 108),
+            mode_command_bg: Color::Rgb(139, 233, 253),
+            cursor_line_bg: Color::Rgb(52, 55, 70),
+            chip_fg: Color::Rgb(40, 42, 54),
         }
     }
 
     /// Solarized Light theme.
     pub fn solarized_light() -> Self {
         Theme {
-            editor_bg: None,
+            editor_bg: Some(Color::Rgb(253, 246, 227)),
             editor_fg: Some(Color::Rgb(101, 123, 131)),
             line_number_fg: Color::Rgb(147, 161, 161),
-            selection_bg: Color::Rgb(238, 232, 213),
+            selection_bg: Color::Rgb(220, 214, 194),
             search_active_bg: Color::Rgb(133, 153, 0),
             search_active_fg: Color::Rgb(253, 246, 227),
             search_match_bg: Color::Rgb(181, 137, 0),
@@ -163,23 +246,25 @@ impl Theme {
             preview_inline_code_bg: Color::Rgb(238, 232, 213),
             preview_code_bg: Color::Rgb(248, 242, 223),
             preview_indicator_fg: Color::Rgb(38, 139, 210),
-            preview_indicator_bg: Color::Rgb(238, 232, 213),
+            preview_indicator_bg: Color::Rgb(233, 226, 203),
             preview_accent_primary: Color::Rgb(38, 139, 210),
             preview_accent_secondary: Color::Rgb(133, 153, 0),
             preview_accent_tertiary: Color::Rgb(108, 113, 196),
             preview_accent_warning: Color::Rgb(181, 137, 0),
             preview_accent_danger: Color::Rgb(220, 50, 47),
-            mode_normal_bg: Color::Rgb(238, 232, 213),
+            mode_normal_bg: Color::Rgb(38, 139, 210),
             mode_insert_bg: Color::Rgb(133, 153, 0),
-            mode_visual_bg: Color::Rgb(38, 139, 210),
-            mode_command_bg: Color::Rgb(38, 139, 210),
+            mode_visual_bg: Color::Rgb(108, 113, 196),
+            mode_command_bg: Color::Rgb(181, 137, 0),
+            cursor_line_bg: Color::Rgb(238, 232, 213),
+            chip_fg: Color::Rgb(253, 246, 227),
         }
     }
 
     /// Gruvbox Dark theme.
     pub fn gruvbox_dark() -> Self {
         Theme {
-            editor_bg: None,
+            editor_bg: Some(Color::Rgb(40, 40, 40)),
             editor_fg: Some(Color::Rgb(235, 219, 178)),
             line_number_fg: Color::Rgb(146, 131, 116),
             selection_bg: Color::Rgb(80, 73, 69),
@@ -187,13 +272,13 @@ impl Theme {
             search_active_fg: Color::Rgb(40, 40, 40),
             search_match_bg: Color::Rgb(250, 189, 47),
             search_match_fg: Color::Rgb(40, 40, 40),
-            divider_fg: Color::Rgb(80, 73, 69),
-            status_bar_bg: Color::Rgb(80, 73, 69),
+            divider_fg: Color::Rgb(102, 92, 84),
+            status_bar_bg: Color::Rgb(60, 56, 54),
             status_bar_fg: Color::Rgb(235, 219, 178),
-            confirm_bg: Color::Rgb(204, 36, 29),
-            confirm_fg: Color::Rgb(235, 219, 178),
-            prompt_bg: Color::Rgb(69, 133, 136),
-            prompt_fg: Color::Rgb(235, 219, 178),
+            confirm_bg: Color::Rgb(251, 73, 52),
+            confirm_fg: Color::Rgb(40, 40, 40),
+            prompt_bg: Color::Rgb(131, 165, 152),
+            prompt_fg: Color::Rgb(40, 40, 40),
             syntect_theme: "base16-ocean.dark".to_string(),
             preview_fg: Color::Rgb(235, 219, 178),
             preview_muted_fg: Color::Rgb(146, 131, 116),
@@ -208,10 +293,12 @@ impl Theme {
             preview_accent_tertiary: Color::Rgb(211, 134, 155),
             preview_accent_warning: Color::Rgb(250, 189, 47),
             preview_accent_danger: Color::Rgb(204, 36, 29),
-            mode_normal_bg: Color::Rgb(80, 73, 69),
-            mode_insert_bg: Color::Rgb(152, 151, 26),
-            mode_visual_bg: Color::Rgb(69, 133, 136),
-            mode_command_bg: Color::Rgb(69, 133, 136),
+            mode_normal_bg: Color::Rgb(131, 165, 152),
+            mode_insert_bg: Color::Rgb(184, 187, 38),
+            mode_visual_bg: Color::Rgb(211, 134, 155),
+            mode_command_bg: Color::Rgb(250, 189, 47),
+            cursor_line_bg: Color::Rgb(60, 56, 54),
+            chip_fg: Color::Rgb(40, 40, 40),
         }
     }
 
@@ -268,6 +355,8 @@ impl Theme {
         t.mode_insert_bg = rgb_to_256(t.mode_insert_bg);
         t.mode_visual_bg = rgb_to_256(t.mode_visual_bg);
         t.mode_command_bg = rgb_to_256(t.mode_command_bg);
+        t.cursor_line_bg = rgb_to_256(t.cursor_line_bg);
+        t.chip_fg = rgb_to_256(t.chip_fg);
         t
     }
 
@@ -510,26 +599,47 @@ pub fn parse_color(s: &str) -> Option<Color> {
 /// Map an Rgb color to the nearest 256-color indexed value (6x6x6 cube, indices 16-231).
 /// Non-Rgb colors are returned unchanged.
 fn rgb_to_256(color: Color) -> Color {
-    match color {
-        Color::Rgb(r, g, b) => {
-            // Map each channel to the 6-level cube (0-5)
-            let ri = nearest_cube_index(r);
-            let gi = nearest_cube_index(g);
-            let bi = nearest_cube_index(b);
-            Color::Indexed(16 + 36 * ri + 6 * gi + bi)
-        }
-        other => other,
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let dist = |(cr, cg, cb): (u8, u8, u8)| -> u32 {
+        let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).pow(2) as u32;
+        d(r, cr) + d(g, cg) + d(b, cb)
+    };
+
+    // Candidate 1: the 6x6x6 color cube.
+    let (ri, gi, bi) = (
+        nearest_cube_index(r),
+        nearest_cube_index(g),
+        nearest_cube_index(b),
+    );
+    let cube = 16 + 36 * ri + 6 * gi + bi;
+    let cube_rgb = (
+        CUBE_LEVELS[usize::from(ri)],
+        CUBE_LEVELS[usize::from(gi)],
+        CUBE_LEVELS[usize::from(bi)],
+    );
+
+    // Candidate 2: the 24-step gray ramp, which is far finer for the dark,
+    // low-saturation surface colors themes use (the cube would crush them
+    // all to black).
+    let avg = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
+    let step = ((avg.saturating_sub(8) + 5) / 10).min(23) as u8;
+    let gray_value = 8 + 10 * step;
+
+    if dist((gray_value, gray_value, gray_value)) < dist(cube_rgb) {
+        Color::Indexed(232 + step)
+    } else {
+        Color::Indexed(cube)
     }
 }
 
 /// Map a 0-255 channel value to the nearest 6x6x6 cube index (0-5).
 fn nearest_cube_index(val: u8) -> u8 {
-    // The 6 cube levels correspond to values: 0, 95, 135, 175, 215, 255
-    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
     let mut best = 0u8;
-    let mut best_dist = 255u16;
-    for (i, &level) in LEVELS.iter().enumerate() {
-        let dist = (val as i16 - level as i16).unsigned_abs();
+    let mut best_dist = u16::MAX;
+    for (i, &level) in CUBE_LEVELS.iter().enumerate() {
+        let dist = (i16::from(val) - i16::from(level)).unsigned_abs();
         if dist < best_dist {
             best_dist = dist;
             best = i as u8;

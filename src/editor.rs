@@ -43,6 +43,18 @@ impl LineEnding {
     }
 }
 
+/// One visual row of raw source in the live view.
+pub struct RawRow {
+    pub line: Line<'static>,
+    /// Source line this row belongs to.
+    pub source_line: usize,
+    /// Char range of the source line shown on this row.
+    pub start_char: usize,
+    pub end_char: usize,
+    /// Whether this is the final visual row of its source line.
+    pub last_of_line: bool,
+}
+
 struct RenderContext<'a> {
     area: Rect,
     search_query: &'a str,
@@ -74,6 +86,8 @@ pub struct Editor<'a> {
     cursor_line_screen_row: i32,
     /// Horizontal scroll in cells (no-wrap mode only).
     hscroll: usize,
+    /// Total scrollable rows as of the last render (see `scroll_metrics`).
+    total_rows: usize,
 }
 
 impl<'a> Editor<'a> {
@@ -110,7 +124,7 @@ impl<'a> Editor<'a> {
         // Set tab length as safety net (D-17); we intercept Tab ourselves
         textarea.set_tab_length(2);
 
-        let highlighter = MarkdownHighlighter::new(&theme.syntect_theme);
+        let highlighter = MarkdownHighlighter::new(&theme);
         Editor {
             textarea,
             modified: false,
@@ -122,6 +136,7 @@ impl<'a> Editor<'a> {
             word_wrap: false,
             cursor_line_screen_row: 0,
             hscroll: 0,
+            total_rows: 0,
         }
     }
 
@@ -135,7 +150,7 @@ impl<'a> Editor<'a> {
     pub fn apply_theme(&mut self, theme: Theme) {
         self.textarea
             .set_line_number_style(Style::default().fg(theme.line_number_fg));
-        self.highlighter = MarkdownHighlighter::new(&theme.syntect_theme);
+        self.highlighter = MarkdownHighlighter::new(&theme);
         self.theme = theme;
     }
 
@@ -424,15 +439,15 @@ impl<'a> Editor<'a> {
         }
     }
 
-    /// Whether syntax highlighting still has visible lines to catch up on
-    /// (the app should redraw soon rather than idle).
-    pub fn highlight_pending(&self) -> bool {
-        self.highlighter.is_pending()
-    }
-
     /// Whether the buffer has been modified since last save.
     pub fn is_modified(&self) -> bool {
         self.modified
+    }
+
+    /// Mark the buffer as having unsaved changes. Edits made directly on the
+    /// textarea (vim commands, paste) go through here.
+    pub fn mark_modified(&mut self) {
+        self.modified = true;
     }
 
     /// Mark the buffer as saved (resets modified flag).
@@ -785,22 +800,22 @@ impl<'a> Editor<'a> {
         let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(ctx.height);
         for (i, hl_line) in highlighted.into_iter().enumerate() {
             let row = scroll_top + i;
-            let lnum =
-                highlighter::line_number_span(row, ctx.total_lines, self.theme.line_number_fg);
+            let lnum = highlighter::line_number_span(
+                row,
+                ctx.total_lines,
+                self.gutter_style(row == ctx.cursor_row),
+            );
             let content_spans = self.overlay_spans(row, hl_line.spans, search_re.as_ref(), ctx);
             let content_spans = clip_spans(content_spans, self.hscroll, ctx.content_width);
 
             let mut final_spans = vec![lnum];
             final_spans.extend(content_spans);
-
-            let mut line = Line::from(final_spans);
-            if row == ctx.cursor_row {
-                line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
-            }
-            display_lines.push(line);
+            display_lines.push(Line::from(final_spans));
         }
 
-        frame.render_widget(Paragraph::new(display_lines), ctx.area);
+        frame.render_widget(self.paragraph(display_lines), ctx.area);
+        self.total_rows = ctx.total_lines;
+        self.tint_cursor_rows(frame, ctx, ctx.cursor_row.saturating_sub(scroll_top), 1);
 
         let cursor_rel_row = ctx.cursor_row.saturating_sub(scroll_top) as u16;
         self.cursor_line_screen_row = i32::from(cursor_rel_row);
@@ -845,6 +860,8 @@ impl<'a> Editor<'a> {
 
         let mut display_lines: Vec<Line<'static>> = Vec::with_capacity(ctx.height);
         let mut cursor_screen_y: Option<u16> = None;
+        // (first screen row, row count) of the cursor's logical line
+        let mut cursor_rows: Option<(usize, usize)> = None;
 
         for (i, hl_line) in highlighted.into_iter().enumerate() {
             if display_lines.len() >= ctx.height {
@@ -869,7 +886,11 @@ impl<'a> Editor<'a> {
 
                 // Line number on the first visual row, blank on continuations
                 let lnum = if vi == 0 {
-                    highlighter::line_number_span(row, ctx.total_lines, self.theme.line_number_fg)
+                    highlighter::line_number_span(
+                        row,
+                        ctx.total_lines,
+                        self.gutter_style(is_cursor_line),
+                    )
                 } else {
                     Span::raw(" ".repeat(ctx.lnum_width))
                 };
@@ -877,18 +898,26 @@ impl<'a> Editor<'a> {
                 let mut final_spans = vec![lnum];
                 final_spans.extend(visual_line_spans);
 
-                let mut line = Line::from(final_spans);
                 if is_cursor_line {
-                    line = line.style(Style::default().add_modifier(Modifier::UNDERLINED));
+                    cursor_rows.get_or_insert((display_lines.len(), 0)).1 += 1;
                 }
                 if is_cursor_line && vi == cursor_sub {
                     cursor_screen_y = Some(display_lines.len() as u16);
                 }
-                display_lines.push(line);
+                display_lines.push(Line::from(final_spans));
             }
         }
 
-        frame.render_widget(Paragraph::new(display_lines), ctx.area);
+        frame.render_widget(self.paragraph(display_lines), ctx.area);
+        self.total_rows = self
+            .textarea
+            .lines()
+            .iter()
+            .map(|l| visual_rows(l, wrap_width))
+            .sum();
+        if let Some((first, count)) = cursor_rows {
+            self.tint_cursor_rows(frame, ctx, first, count);
+        }
 
         if let Some(cy) = cursor_screen_y {
             let x = ctx.area.x + (ctx.lnum_width + cursor_x) as u16;
@@ -897,6 +926,139 @@ impl<'a> Editor<'a> {
                 frame.set_cursor_position((x, y));
             }
         }
+    }
+
+    /// Raw (syntax-highlighted, word-wrapped) rows for a range of source
+    /// lines, for the live view. Returns the rows plus the cursor's position
+    /// as (row index, cell column) when the cursor is inside the range.
+    pub fn raw_rows(
+        &self,
+        range: std::ops::Range<usize>,
+        width: usize,
+        search_query: &str,
+    ) -> (Vec<RawRow>, Option<(usize, usize)>) {
+        let lines = self.textarea.lines();
+        let range = range.start.min(lines.len())..range.end.min(lines.len());
+        let width = width.max(1);
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        let ctx = RenderContext {
+            area: Rect::default(),
+            search_query,
+            cursor_row,
+            cursor_col,
+            total_lines: lines.len(),
+            height: 0,
+            lnum_width: 0,
+            content_width: width,
+        };
+        let search_re = Self::search_regex(search_query);
+        let highlighted = self
+            .highlighter
+            .highlight_range(lines, range.start, range.end);
+
+        let mut rows = Vec::new();
+        let mut cursor = None;
+        for (i, hl_line) in highlighted.into_iter().enumerate() {
+            let source_line = range.start + i;
+            let text = &lines[source_line];
+            let starts = wrap_starts(text, width);
+            let spans = self.overlay_spans(source_line, hl_line.spans, search_re.as_ref(), &ctx);
+            let wrapped = split_spans_at(spans, &char_starts_to_bytes(text, &starts));
+
+            if source_line == cursor_row {
+                let sub = starts
+                    .partition_point(|&s| s <= cursor_col)
+                    .saturating_sub(1);
+                let x = display_width_between(text, starts[sub], cursor_col).min(width - 1);
+                cursor = Some((rows.len() + sub, x));
+            }
+            let total_chars = text.chars().count();
+            for (sub, spans) in wrapped.into_iter().enumerate() {
+                rows.push(RawRow {
+                    line: Line::from(spans),
+                    source_line,
+                    start_char: starts[sub],
+                    end_char: starts.get(sub + 1).copied().unwrap_or(total_chars),
+                    last_of_line: sub + 1 == starts.len(),
+                });
+            }
+        }
+        (rows, cursor)
+    }
+
+    /// Char index in `row` that a click at cell `x` lands on.
+    pub fn char_at_cell(&self, row: &RawRow, x: usize) -> usize {
+        let Some(text) = self.textarea.lines().get(row.source_line) else {
+            return 0;
+        };
+        // Past the end of a wrapped (non-final) row lands on its last char.
+        let to = if row.last_of_line {
+            row.end_char
+        } else {
+            row.end_char.saturating_sub(1).max(row.start_char)
+        };
+        char_at_display_col(text, row.start_char, to, x)
+    }
+
+    /// Source lines covered by the selection (or just the cursor line).
+    pub fn active_lines(&self) -> (usize, usize) {
+        let (cursor_row, _) = self.textarea.cursor();
+        match self.textarea.selection_range() {
+            Some(((start, _), (end, _))) => (start.min(cursor_row), end.max(cursor_row)),
+            None => (cursor_row, cursor_row),
+        }
+    }
+
+    /// Gutter style: the cursor line's number stands out.
+    fn gutter_style(&self, is_cursor_line: bool) -> Style {
+        if is_cursor_line {
+            Style::default()
+                .fg(self.theme.preview_accent_primary)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(self.theme.line_number_fg)
+        }
+    }
+
+    /// Paragraph for the visible lines in the theme's editor colors.
+    fn paragraph(&self, lines: Vec<Line<'static>>) -> Paragraph<'static> {
+        let mut style = Style::default();
+        if let Some(fg) = self.theme.editor_fg {
+            style = style.fg(fg);
+        }
+        if let Some(bg) = self.theme.editor_bg {
+            style = style.bg(bg);
+        }
+        Paragraph::new(lines).style(style)
+    }
+
+    /// Tint the background of the cursor line's screen rows. Cells that
+    /// already carry a background (selection, search matches) keep it.
+    fn tint_cursor_rows(
+        &self,
+        frame: &mut Frame,
+        ctx: &RenderContext<'_>,
+        first_row: usize,
+        count: usize,
+    ) {
+        let buf = frame.buffer_mut();
+        let base_bg = self.theme.editor_bg.unwrap_or(ratatui::style::Color::Reset);
+        for row in first_row..(first_row + count).min(ctx.height) {
+            let y = ctx.area.y + row as u16;
+            for x in ctx.area.x..ctx.area.x + ctx.area.width {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    if cell.bg == base_bg {
+                        cell.set_bg(self.theme.cursor_line_bg);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scroll position for a scrollbar: (total rows, first visible row).
+    /// Rows are visual rows when wrapping, logical lines otherwise.
+    pub fn scroll_metrics(&self) -> (usize, usize) {
+        (self.total_rows, self.scroll_top)
     }
 
     /// Absolute visual row where logical line `row` starts.
@@ -951,31 +1113,50 @@ fn is_simple_ascii(line: &str) -> bool {
         .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
 }
 
-/// Char indices at which each visual row of `line` begins when hard-wrapped
-/// at `width` cells. Always starts with 0.
+/// Char indices at which each visual row of `line` begins when wrapped to
+/// `width` cells. Always starts with 0.
+///
+/// Rows break at word boundaries: a word that doesn't fit moves to the next
+/// row whole, and only a word longer than a full row is split. Whitespace
+/// never starts a row because of wrapping — it hangs past the right edge
+/// (invisible) so the next row begins at the word.
 fn wrap_starts(line: &str, width: usize) -> Vec<usize> {
     let width = width.max(1);
-    if is_simple_ascii(line) {
-        let rows = line.len().div_ceil(width).max(1);
-        return (0..rows).map(|r| r * width).collect();
+    if line.len() <= width && is_simple_ascii(line) {
+        return vec![0];
     }
     let mut starts = vec![0];
     let mut col = 0;
+    // (char index, column) just after the last whitespace in the current row
+    let mut break_at: Option<(usize, usize)> = None;
     for (i, c) in line.chars().enumerate() {
         let w = char_width(c);
+        if c.is_whitespace() {
+            col += w;
+            break_at = Some((i + 1, col));
+            continue;
+        }
         if col + w > width && col > 0 {
-            starts.push(i);
-            col = 0;
+            match break_at.take() {
+                Some((at, at_col)) if at_col > 0 => {
+                    starts.push(at);
+                    col -= at_col;
+                }
+                _ => {
+                    starts.push(i);
+                    col = 0;
+                }
+            }
         }
         col += w;
     }
     starts
 }
 
-/// Number of visual rows `line` occupies when hard-wrapped at `width` cells.
+/// Number of visual rows `line` occupies when wrapped to `width` cells.
 fn visual_rows(line: &str, width: usize) -> usize {
-    if is_simple_ascii(line) {
-        line.len().div_ceil(width.max(1)).max(1)
+    if line.len() <= width.max(1) && is_simple_ascii(line) {
+        1
     } else {
         wrap_starts(line, width).len()
     }
@@ -1206,13 +1387,25 @@ mod tests {
     }
 
     #[test]
+    fn wrap_breaks_at_word_boundaries() {
+        // "hello world foo" at 11 cells: "hello world " | "foo"
+        assert_eq!(super::wrap_starts("hello world foo", 11), vec![0, 12]);
+        // A word that doesn't fit moves down whole.
+        assert_eq!(super::wrap_starts("aaa bbbb", 6), vec![0, 4]);
+        // Only words longer than a row are split.
+        assert_eq!(super::wrap_starts("ab abcdefgh", 4), vec![0, 3, 7]);
+        // Trailing whitespace never creates an empty row.
+        assert_eq!(super::wrap_starts("abcd   ", 4), vec![0]);
+    }
+
+    #[test]
     fn wrapped_cursor_lands_on_the_right_cell_with_wide_chars() {
         let mut editor = Editor::new(Some("日本語日本語\n".into()), None, Theme::ocean());
         editor.word_wrap = true;
         jump(&mut editor, 0, 3);
-        // Gutter is 2 cells ("1 "), leaving 5 for text: rows start at chars
+        // Gutter is 5 cells, leaving 5 for text: rows start at chars
         // [0, 2, 4]; char 3 is the second glyph of row 1.
-        assert_eq!(render_cursor(&mut editor, 7, 5), (4, 1));
+        assert_eq!(render_cursor(&mut editor, 10, 5), (7, 1));
         assert_eq!(editor.cursor_line_screen_row(), 0);
     }
 
@@ -1220,8 +1413,8 @@ mod tests {
     fn nowrap_scrolls_horizontally_to_keep_cursor_visible() {
         let mut editor = Editor::new(Some(format!("{}\n", "a".repeat(100))), None, Theme::ocean());
         jump(&mut editor, 0, 100);
-        let (x, _) = render_cursor(&mut editor, 22, 3);
-        assert!(x < 22, "cursor x {x} off screen");
+        let (x, _) = render_cursor(&mut editor, 25, 3);
+        assert!(x < 25, "cursor x {x} off screen");
         // Clicking the first text cell maps back through the scroll offset.
         let (row, col) = editor.visual_click_to_logical(0, 0, 20);
         assert_eq!((row, col), (0, 100 + 1 - 20));
